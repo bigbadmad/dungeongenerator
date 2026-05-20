@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AD&amp;D Dungeon Generator</title>
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>Dungeon Generator</h1>
+      <div id="header-actions">
+        <button id="btn-save">Save</button>
+        <button id="btn-load">Load</button>
+        <button id="btn-export-png">Export PNG</button>
+        <input type="file" id="file-input" accept=".json" style="display:none" />
+      </div>
+    </header>
+    <div id="main-layout">
+      <div id="left-panel">
+        <div id="settings-panel">
+          <h2>Settings</h2>
+          <label>
+            Dungeon Level
+            <input type="number" id="setting-level" min="1" max="10" value="1" />
+          </label>
+          <label>
+            Target Size
+            <select id="setting-size">
+              <option value="small">Small</option>
+              <option value="medium" selected>Medium</option>
+              <option value="large">Large</option>
+            </select>
+          </label>
+          <label>
+            Starting Direction
+            <select id="setting-direction">
+              <option value="north" selected>North</option>
+              <option value="east">East</option>
+              <option value="south">South</option>
+              <option value="west">West</option>
+            </select>
+          </label>
+          <button id="btn-start">Start Dungeon</button>
+        </div>
+        <div id="generation-controls" style="display:none">
+          <button id="btn-next">Generate Next</button>
+          <button id="btn-reset">Reset</button>
+        </div>
+        <div id="roll-results"></div>
+      </div>
+      <div id="right-panel">
+        <div id="map-container">
+          <svg id="dungeon-map" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
+                <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#b8cce4" stroke-width="0.5"/>
+              </pattern>
+            </defs>
+            <rect id="map-bg" width="100%" height="100%" fill="url(#grid)" />
+            <g id="map-elements"></g>
+          </svg>
+        </div>
+        <div id="room-key-panel">
+          <h2>Room Key</h2>
+          <div id="room-key-list"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
