@@ -21,6 +21,7 @@ function makeState(): DungeonState {
     rollHistory: [],
     stepCount: 0,
     selectedRoomId: null,
+    occupied: [],
   };
 }
 
@@ -66,12 +67,12 @@ describe('generateStart', () => {
     expect(s.corridors[0].direction).toBe('east');
   });
 
-  it('cursor is positioned at corridor end', () => {
+  it('cursor is positioned one cell beyond the corridor exit end', () => {
     const s = generateStart(makeState());
     const cor = s.corridors[0];
     const cursor = s.cursors[0];
-    // For north direction, corridor end y should be cor.rect.y (top)
-    expect(cursor.position.y).toBe(cor.rect.y);
+    // North corridor: exit end is rect.y (northernmost row); cursor is one cell further north.
+    expect(cursor.position.y).toBe(cor.rect.y - 1);
   });
 });
 

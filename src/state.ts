@@ -16,6 +16,7 @@ function createInitialState(): DungeonState {
     rollHistory: [],
     stepCount: 0,
     selectedRoomId: null,
+    occupied: [],
   };
 }
 
@@ -60,6 +61,7 @@ export function loadFromJSON(json: string): boolean {
     const parsed = JSON.parse(json) as DungeonState;
     // minimal shape check
     if (!parsed.rooms || !parsed.corridors || !parsed.settings) return false;
+    if (!Array.isArray(parsed.occupied)) parsed.occupied = [];
     _state = parsed;
     _listeners.forEach(fn => fn());
     return true;

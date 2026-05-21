@@ -111,12 +111,14 @@ export interface Corridor {
   direction: Direction;
   fromId: string;
   toId: string | null;
+  doorType?: DoorType;
 }
 
 export interface Exit {
   direction: Direction;
   doorType?: DoorType;
   corridorId: string | null;
+  exitPoint: GridPos;
 }
 
 export interface GenerationCursor {
@@ -152,4 +154,5 @@ export interface DungeonState {
   rollHistory: RollRecord[];
   stepCount: number;
   selectedRoomId: string | null;
+  occupied: string[];
 }

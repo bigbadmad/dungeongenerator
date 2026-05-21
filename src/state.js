@@ -13,6 +13,7 @@ function createInitialState() {
         rollHistory: [],
         stepCount: 0,
         selectedRoomId: null,
+        occupied: [],
     };
 }
 let _state = createInitialState();
@@ -52,6 +53,8 @@ export function loadFromJSON(json) {
         // minimal shape check
         if (!parsed.rooms || !parsed.corridors || !parsed.settings)
             return false;
+        if (!Array.isArray(parsed.occupied))
+            parsed.occupied = [];
         _state = parsed;
         _listeners.forEach(fn => fn());
         return true;

@@ -1,27 +1,23 @@
 import { weightedRoll, rollD, PERIODIC_CHECK, TURN_TYPE, SIDE_PASSAGE, PASSAGE_WIDTH, ROOM_SHAPE, ROOM_SIZE_SMALL, ROOM_SIZE_LARGE, ROOM_EXITS, DOOR_TYPE, TRAP_TYPE, ROOM_DRESSING, roomContentsTable, } from './tables.js';
+// ── ID counter ──────────────────────────────────────────────────────────────
 let _idCounter = 0;
-function newId(prefix) {
-    return `${prefix}_${++_idCounter}`;
+function newId(prefix) { return `${prefix}_${++_idCounter}`; }
+export function resetIdCounter() { _idCounter = 0; }
+// ── Occupancy helpers ───────────────────────────────────────────────────────
+function posKey(x, y) { return `${x},${y}`; }
+function isRectFree(rect, occupied) {
+    for (let dy = 0; dy < rect.h; dy++)
+        for (let dx = 0; dx < rect.w; dx++)
+            if (occupied.has(posKey(rect.x + dx, rect.y + dy)))
+                return false;
+    return true;
 }
-export function resetIdCounter() {
-    _idCounter = 0;
+function registerRect(rect, occupied) {
+    for (let dy = 0; dy < rect.h; dy++)
+        for (let dx = 0; dx < rect.w; dx++)
+            occupied.add(posKey(rect.x + dx, rect.y + dy));
 }
-function makeRollRecord(table, diceResult, outcome, outcomeKey, step) {
-    return {
-        id: newId('roll'),
-        table,
-        diceResult,
-        outcome,
-        outcomeKey,
-        overridden: false,
-        step,
-    };
-}
-// Corridor length in grid units (1 unit = 10ft); each segment is 1-3 units
-function corridorLength() {
-    return rollD(3);
-}
-// Move a point in a direction by n units
+// ── Direction helpers ───────────────────────────────────────────────────────
 export function advance(pos, dir, n) {
     switch (dir) {
         case 'north': return { x: pos.x, y: pos.y - n };
@@ -42,35 +38,96 @@ export function opposite(dir) {
     const map = { north: 'south', south: 'north', east: 'west', west: 'east' };
     return map[dir];
 }
-// Build a rect from start pos, direction, width and length (all in grid units)
-function corridorRect(start, dir, length, widthUnits) {
-    const w = widthUnits < 1 ? 1 : widthUnits;
+// ── Geometry ────────────────────────────────────────────────────────────────
+//
+// Convention: `start` is the ENTRY cell of the corridor — the cell closest to
+// the previous element (the cursor position). The corridor extends away from
+// start in the given direction. This means:
+//   north — start is the southernmost cell; corridor extends to lower y values
+//   south — start is the northernmost cell; corridor extends to higher y values
+//   east  — start is the westernmost cell; corridor extends to higher x values
+//   west  — start is the easternmost cell; corridor extends to lower x values
+export function corridorRect(start, dir, length, widthUnits) {
+    const w = Math.max(widthUnits, 1);
     switch (dir) {
-        case 'north': return { x: start.x - Math.floor(w / 2), y: start.y - length, w, h: length };
+        case 'north': return { x: start.x - Math.floor(w / 2), y: start.y - length + 1, w, h: length };
         case 'south': return { x: start.x - Math.floor(w / 2), y: start.y, w, h: length };
         case 'east': return { x: start.x, y: start.y - Math.floor(w / 2), w: length, h: w };
-        case 'west': return { x: start.x - length, y: start.y - Math.floor(w / 2), w: length, h: w };
+        case 'west': return { x: start.x - length + 1, y: start.y - Math.floor(w / 2), w: length, h: w };
     }
 }
-function corridorEnd(rect, dir) {
+// Returns the first FREE cell beyond the exit end of the corridor — this
+// becomes the cursor.position / start for the next element.
+export function corridorEnd(rect, dir) {
     switch (dir) {
-        case 'north': return { x: rect.x + Math.floor(rect.w / 2), y: rect.y };
+        case 'north': return { x: rect.x + Math.floor(rect.w / 2), y: rect.y - 1 };
         case 'south': return { x: rect.x + Math.floor(rect.w / 2), y: rect.y + rect.h };
         case 'east': return { x: rect.x + rect.w, y: rect.y + Math.floor(rect.h / 2) };
-        case 'west': return { x: rect.x, y: rect.y + Math.floor(rect.h / 2) };
+        case 'west': return { x: rect.x - 1, y: rect.y + Math.floor(rect.h / 2) };
     }
 }
-// Generate an initial corridor from the entrance
+// Room rect where `start` is the entry cell (first free cell beyond the
+// arrival corridor). The room is placed so its entry wall aligns with start.
+function roomRect(start, dir, w, h) {
+    switch (dir) {
+        // Arriving from south: entry wall is the south wall; room extends north.
+        case 'north': return { x: start.x - Math.floor(w / 2), y: start.y - h + 1, w, h };
+        // Arriving from north: entry wall is the north wall; room extends south.
+        case 'south': return { x: start.x - Math.floor(w / 2), y: start.y, w, h };
+        // Arriving from west: entry wall is the west wall; room extends east.
+        case 'east': return { x: start.x, y: start.y - Math.floor(h / 2), w, h };
+        // Arriving from east: entry wall is the east wall; room extends west.
+        case 'west': return { x: start.x - w + 1, y: start.y - Math.floor(h / 2), w, h };
+    }
+}
+// Returns the first free cell beyond the given wall of the room — the entry
+// cell for an exit corridor in that direction.
+function roomExitPoint(rect, dir) {
+    switch (dir) {
+        case 'north': return { x: rect.x + Math.floor(rect.w / 2), y: rect.y - 1 };
+        case 'south': return { x: rect.x + Math.floor(rect.w / 2), y: rect.y + rect.h };
+        case 'east': return { x: rect.x + rect.w, y: rect.y + Math.floor(rect.h / 2) };
+        case 'west': return { x: rect.x - 1, y: rect.y + Math.floor(rect.h / 2) };
+    }
+}
+// ── Roll records ────────────────────────────────────────────────────────────
+function makeRollRecord(table, diceResult, outcome, outcomeKey, step) {
+    return { id: newId('roll'), table, diceResult, outcome, outcomeKey, overridden: false, step };
+}
+function corridorLength() { return rollD(3); }
+// ── Placement with collision detection ──────────────────────────────────────
+//
+// Tries lengths from maxLen down to 1. Registers the rect in `occupied` on
+// success. Returns null if every length is blocked.
+function tryPlaceCorridor(start, dir, maxLen, width, occupied) {
+    for (let len = maxLen; len >= 1; len--) {
+        const rect = corridorRect(start, dir, len, width);
+        if (isRectFree(rect, occupied)) {
+            registerRect(rect, occupied);
+            return { rect };
+        }
+    }
+    return null;
+}
+// ── generateStart ───────────────────────────────────────────────────────────
 export function generateStart(state) {
     const dir = state.settings.startDirection;
-    const origin = { x: 0, y: 0 };
-    const len = corridorLength();
+    const entrance = { x: 0, y: 0 };
+    const occupied = new Set(state.occupied);
+    // The entrance cell belongs to the dungeon; nothing else may occupy it.
+    occupied.add(posKey(entrance.x, entrance.y));
     const widthEntry = weightedRoll(PASSAGE_WIDTH);
     const width = widthEntry.value < 1 ? 2 : widthEntry.value;
-    const rect = corridorRect(origin, dir, len, width);
+    const len = corridorLength();
+    // Corridor starts at the first cell away from the entrance.
+    const firstCell = advance(entrance, dir, 1);
+    const placed = tryPlaceCorridor(firstCell, dir, len, width, occupied);
+    if (!placed) {
+        return { ...state, started: true, occupied: [...occupied] };
+    }
     const corridor = {
         id: newId('cor'),
-        rect,
+        rect: placed.rect,
         direction: dir,
         fromId: 'entrance',
         toId: null,
@@ -78,7 +135,7 @@ export function generateStart(state) {
     const cursor = {
         type: 'corridor_end',
         corridorId: corridor.id,
-        position: corridorEnd(rect, dir),
+        position: corridorEnd(placed.rect, dir),
         direction: dir,
     };
     const roll = makeRollRecord('Passage Width', widthEntry.weight, widthEntry.label, widthEntry.value.toString(), 0);
@@ -89,15 +146,31 @@ export function generateStart(state) {
         cursors: [cursor],
         rollHistory: [roll],
         stepCount: 1,
+        occupied: [...occupied],
     };
 }
-// Main step: resolve the next cursor
+// ── generateNext ────────────────────────────────────────────────────────────
 export function generateNext(state) {
     if (state.cursors.length === 0)
         return state;
     const [cursor, ...remainingCursors] = state.cursors;
     const step = state.stepCount + 1;
     const rolls = [];
+    const occupied = new Set(state.occupied);
+    // If another element has grown into this cursor's position since it was
+    // created, drop it silently rather than placing something impossible.
+    if (occupied.has(posKey(cursor.position.x, cursor.position.y))) {
+        return {
+            ...state,
+            cursors: remainingCursors,
+            rollHistory: [
+                ...state.rollHistory,
+                makeRollRecord('Path', 0, 'Path blocked — skipped', 'blocked', step),
+            ],
+            stepCount: step,
+            occupied: [...occupied],
+        };
+    }
     const periodicEntry = weightedRoll(PERIODIC_CHECK);
     rolls.push(makeRollRecord('Periodic Check', rollD(100), periodicEntry.label, periodicEntry.value, step));
     let newRooms = [...state.rooms];
@@ -105,38 +178,43 @@ export function generateNext(state) {
     let newCursors = [...remainingCursors];
     switch (periodicEntry.value) {
         case 'continue': {
-            const result = extendCorridor(cursor, step, rolls);
-            newCorridors = [...newCorridors, result.corridor];
-            newCursors = [...newCursors, result.cursor];
+            const r = extendCorridor(cursor, step, rolls, occupied);
+            if (r) {
+                newCorridors.push(r.corridor);
+                newCursors.push(r.cursor);
+            }
             break;
         }
         case 'turn': {
-            const result = handleTurn(cursor, step, rolls, state.corridors);
-            newCorridors = [...newCorridors, ...result.corridors];
-            newCursors = [...newCursors, ...result.cursors];
+            const r = handleTurn(cursor, step, rolls, occupied);
+            newCorridors.push(...r.corridors);
+            newCursors.push(...r.cursors);
             break;
         }
         case 'door': {
-            const result = extendWithDoor(cursor, step, rolls);
-            newCorridors = [...newCorridors, result.corridor];
-            newCursors = [...newCursors, result.cursor];
+            const r = extendWithDoor(cursor, step, rolls, occupied);
+            if (r) {
+                newCorridors.push(r.corridor);
+                newCursors.push(r.cursor);
+            }
             break;
         }
         case 'side_passage': {
-            const result = handleSidePassage(cursor, step, rolls);
-            newCorridors = [...newCorridors, ...result.corridors];
-            newCursors = [...newCursors, ...result.cursors];
+            const r = handleSidePassage(cursor, step, rolls, occupied);
+            newCorridors.push(...r.corridors);
+            newCursors.push(...r.cursors);
             break;
         }
         case 'chamber': {
-            const result = generateRoom(cursor, step, rolls, state.settings.level);
-            newRooms = [...newRooms, result.room];
-            newCorridors = [...newCorridors, ...result.exitCorridors];
-            newCursors = [...newCursors, ...result.exitCursors];
+            const r = generateRoom(cursor, step, rolls, state.settings.level, occupied);
+            if (r) {
+                newRooms.push(r.room);
+                newCorridors.push(...r.exitCorridors);
+                newCursors.push(...r.exitCursors);
+            }
             break;
         }
         case 'dead_end': {
-            // Dead end — seal this corridor, no new cursor
             rolls.push(makeRollRecord('Dead End', 0, 'Passage ends', 'dead_end', step));
             break;
         }
@@ -148,75 +226,78 @@ export function generateNext(state) {
         cursors: newCursors,
         rollHistory: [...state.rollHistory, ...rolls],
         stepCount: step,
+        occupied: [...occupied],
     };
 }
-function extendCorridor(cursor, step, rolls) {
+// ── Branch functions ─────────────────────────────────────────────────────────
+// Each receives the live `occupied` Set and mutates it as placements succeed.
+function extendCorridor(cursor, step, rolls, occupied) {
     const len = corridorLength();
     const widthEntry = weightedRoll(PASSAGE_WIDTH);
     const width = widthEntry.value < 1 ? 2 : widthEntry.value;
     rolls.push(makeRollRecord('Passage Width', widthEntry.weight, widthEntry.label, widthEntry.value.toString(), step));
-    const rect = corridorRect(cursor.position, cursor.direction, len, width);
+    const placed = tryPlaceCorridor(cursor.position, cursor.direction, len, width, occupied);
+    if (!placed)
+        return null;
     const corridor = {
         id: newId('cor'),
-        rect,
+        rect: placed.rect,
         direction: cursor.direction,
         fromId: cursor.corridorId,
         toId: null,
     };
-    const newCursor = {
-        type: 'corridor_end',
-        corridorId: corridor.id,
-        position: corridorEnd(rect, cursor.direction),
-        direction: cursor.direction,
+    return {
+        corridor,
+        cursor: {
+            type: 'corridor_end',
+            corridorId: corridor.id,
+            position: corridorEnd(placed.rect, cursor.direction),
+            direction: cursor.direction,
+        },
     };
-    return { corridor, cursor: newCursor };
 }
-function extendWithDoor(cursor, step, rolls) {
+function extendWithDoor(cursor, step, rolls, occupied) {
     const doorEntry = weightedRoll(DOOR_TYPE);
     rolls.push(makeRollRecord('Door Type', rollD(8), doorEntry.label, doorEntry.value, step));
-    // Door is a short stub corridor with a door symbol
-    const len = 1;
-    const rect = corridorRect(cursor.position, cursor.direction, len, 2);
+    const placed = tryPlaceCorridor(cursor.position, cursor.direction, 1, 2, occupied);
+    if (!placed)
+        return null;
     const corridor = {
         id: newId('cor'),
-        rect,
+        rect: placed.rect,
         direction: cursor.direction,
         fromId: cursor.corridorId,
         toId: null,
     };
-    const newCursor = {
-        type: 'corridor_end',
-        corridorId: corridor.id,
-        position: corridorEnd(rect, cursor.direction),
-        direction: cursor.direction,
+    return {
+        corridor,
+        cursor: {
+            type: 'corridor_end',
+            corridorId: corridor.id,
+            position: corridorEnd(placed.rect, cursor.direction),
+            direction: cursor.direction,
+        },
     };
-    return { corridor, cursor: newCursor };
 }
-function handleTurn(cursor, step, rolls, existingCorridors) {
+function handleTurn(cursor, step, rolls, occupied) {
     const turnEntry = weightedRoll(TURN_TYPE);
     rolls.push(makeRollRecord('Turn Type', rollD(20), turnEntry.label, turnEntry.value, step));
     const corridors = [];
     const cursors = [];
     const addBranch = (dir) => {
-        const len = corridorLength();
-        const rect = corridorRect(cursor.position, dir, len, 2);
+        const placed = tryPlaceCorridor(cursor.position, dir, corridorLength(), 2, occupied);
+        if (!placed)
+            return;
         const cor = {
-            id: newId('cor'),
-            rect,
-            direction: dir,
-            fromId: cursor.corridorId,
-            toId: null,
+            id: newId('cor'), rect: placed.rect, direction: dir,
+            fromId: cursor.corridorId, toId: null,
         };
         corridors.push(cor);
         cursors.push({
-            type: 'corridor_end',
-            corridorId: cor.id,
-            position: corridorEnd(rect, dir),
-            direction: dir,
+            type: 'corridor_end', corridorId: cor.id,
+            position: corridorEnd(placed.rect, dir), direction: dir,
         });
     };
-    // suppress unused warning
-    void existingCorridors;
     switch (turnEntry.value) {
         case 'left_90':
         case 'left_45_ahead':
@@ -243,58 +324,50 @@ function handleTurn(cursor, step, rolls, existingCorridors) {
     }
     return { corridors, cursors };
 }
-function handleSidePassage(cursor, step, rolls) {
+function handleSidePassage(cursor, step, rolls, occupied) {
     const sideEntry = weightedRoll(SIDE_PASSAGE);
     rolls.push(makeRollRecord('Side Passage', rollD(20), sideEntry.label, sideEntry.value, step));
     const corridors = [];
     const cursors = [];
     const addBranch = (dir) => {
-        const len = corridorLength();
-        const rect = corridorRect(cursor.position, dir, len, 2);
+        const placed = tryPlaceCorridor(cursor.position, dir, corridorLength(), 2, occupied);
+        if (!placed)
+            return;
         const cor = {
-            id: newId('cor'),
-            rect,
-            direction: dir,
-            fromId: cursor.corridorId,
-            toId: null,
+            id: newId('cor'), rect: placed.rect, direction: dir,
+            fromId: cursor.corridorId, toId: null,
         };
         corridors.push(cor);
         cursors.push({
-            type: 'corridor_end',
-            corridorId: cor.id,
-            position: corridorEnd(rect, dir),
-            direction: dir,
+            type: 'corridor_end', corridorId: cor.id,
+            position: corridorEnd(placed.rect, dir), direction: dir,
         });
     };
-    // Main passage always continues straight
-    addBranch(cursor.direction);
     switch (sideEntry.value) {
         case 'left':
+            addBranch(cursor.direction);
             addBranch(turnLeft(cursor.direction));
             break;
         case 'right':
+            addBranch(cursor.direction);
             addBranch(turnRight(cursor.direction));
             break;
         case 'both':
         case 'ahead_left_right':
+            addBranch(cursor.direction);
             addBranch(turnLeft(cursor.direction));
             addBranch(turnRight(cursor.direction));
             break;
         case 'passage_t':
-            // T: left + right, no straight (remove the straight we added above)
-            corridors.pop();
-            cursors.pop();
             addBranch(turnLeft(cursor.direction));
             addBranch(turnRight(cursor.direction));
             break;
     }
     return { corridors, cursors };
 }
-function generateRoom(cursor, step, rolls, level) {
-    // Shape
+function generateRoom(cursor, step, rolls, level, occupied) {
     const shapeEntry = weightedRoll(ROOM_SHAPE);
     rolls.push(makeRollRecord('Room Shape', rollD(10), shapeEntry.label, shapeEntry.value, step));
-    // Size
     const sizeTable = shapeEntry.value === 'circle' ? ROOM_SIZE_SMALL : ROOM_SIZE_LARGE;
     const wEntry = weightedRoll(sizeTable);
     const hEntry = shapeEntry.value === 'rectangle' ? weightedRoll(sizeTable) : wEntry;
@@ -302,18 +375,25 @@ function generateRoom(cursor, step, rolls, level) {
     if (shapeEntry.value === 'rectangle') {
         rolls.push(makeRollRecord('Room Depth', rollD(10), `${hEntry.value * 10} ft`, hEntry.value.toString(), step));
     }
-    // Placement: room centred on where the corridor arrives
-    const w = wEntry.value;
-    const h = hEntry.value;
-    const rect = {
-        x: cursor.position.x - Math.floor(w / 2),
-        y: cursor.position.y - Math.floor(h / 2),
-        w,
-        h,
-    };
+    // Try the rolled size, then progressively smaller fallbacks.
+    const sizeCandidates = [
+        { w: wEntry.value, h: hEntry.value },
+        { w: Math.max(2, wEntry.value - 1), h: Math.max(2, hEntry.value - 1) },
+        { w: 2, h: 2 },
+    ];
+    let rect = null;
+    for (const sz of sizeCandidates) {
+        const candidate = roomRect(cursor.position, cursor.direction, sz.w, sz.h);
+        if (isRectFree(candidate, occupied)) {
+            rect = candidate;
+            break;
+        }
+    }
+    if (!rect)
+        return null;
+    registerRect(rect, occupied);
     // Contents
-    const contentsTable = roomContentsTable(level);
-    const contentsEntry = weightedRoll(contentsTable);
+    const contentsEntry = weightedRoll(roomContentsTable(level));
     rolls.push(makeRollRecord('Room Contents', rollD(100), contentsEntry.label, contentsEntry.value, step));
     let trap = undefined;
     if (contentsEntry.value === 'trap' || contentsEntry.value === 'trap_treasure') {
@@ -328,20 +408,23 @@ function generateRoom(cursor, step, rolls, level) {
         rolls.push(makeRollRecord('Room Dressing', rollD(12), `${dressingEntry.label}: ${flavour}`, dressingEntry.value, step));
         dressing = { type: dressingEntry.value, flavour };
     }
-    // Number of exits (not counting entrance)
+    // Exits — only directions whose first external cell is currently free.
     const exitsEntry = weightedRoll(ROOM_EXITS);
     rolls.push(makeRollRecord('Room Exits', rollD(6), exitsEntry.label, exitsEntry.value.toString(), step));
     const exits = [];
     const exitCorridors = [];
     const exitCursors = [];
-    // Exit directions: try to spread them around, skip the direction we came from
     const entryDir = opposite(cursor.direction);
-    const possibleDirs = ['north', 'east', 'south', 'west'].filter(d => d !== entryDir);
-    const usedDirs = new Set();
+    const possibleDirs = ['north', 'east', 'south', 'west'].filter(d => {
+        if (d === entryDir)
+            return false;
+        const ep = roomExitPoint(rect, d);
+        return !occupied.has(posKey(ep.x, ep.y));
+    });
     for (let i = 0; i < exitsEntry.value && possibleDirs.length > 0; i++) {
         const idx = Math.floor(Math.random() * possibleDirs.length);
         const exitDir = possibleDirs.splice(idx, 1)[0];
-        usedDirs.add(exitDir);
+        const exitPt = roomExitPoint(rect, exitDir);
         const hasDoor = Math.random() < 0.5;
         let doorType;
         if (hasDoor) {
@@ -349,24 +432,24 @@ function generateRoom(cursor, step, rolls, level) {
             doorType = dEntry.value;
             rolls.push(makeRollRecord('Exit Door', rollD(8), dEntry.label, dEntry.value, step));
         }
-        const corLen = corridorLength();
-        const exitStart = roomExitPoint(rect, exitDir);
-        const corRect = corridorRect(exitStart, exitDir, corLen, 2);
+        const placed = tryPlaceCorridor(exitPt, exitDir, corridorLength(), 2, occupied);
+        if (!placed)
+            continue;
         const cor = {
             id: newId('cor'),
-            rect: corRect,
+            rect: placed.rect,
             direction: exitDir,
-            fromId: 'room_' + step,
+            fromId: 'pending',
             toId: null,
         };
         exitCorridors.push(cor);
         exitCursors.push({
             type: 'corridor_end',
             corridorId: cor.id,
-            position: corridorEnd(corRect, exitDir),
+            position: corridorEnd(placed.rect, exitDir),
             direction: exitDir,
         });
-        exits.push({ direction: exitDir, doorType, corridorId: cor.id });
+        exits.push({ direction: exitDir, doorType, corridorId: cor.id, exitPoint: exitPt });
     }
     const room = {
         id: newId('room'),
@@ -379,18 +462,10 @@ function generateRoom(cursor, step, rolls, level) {
         notes: '',
         isEntrance: false,
     };
-    // Fix corridor fromId to use actual room id
     exitCorridors.forEach(c => { c.fromId = room.id; });
     return { room, exitCorridors, exitCursors };
 }
-function roomExitPoint(rect, dir) {
-    switch (dir) {
-        case 'north': return { x: rect.x + Math.floor(rect.w / 2), y: rect.y };
-        case 'south': return { x: rect.x + Math.floor(rect.w / 2), y: rect.y + rect.h };
-        case 'east': return { x: rect.x + rect.w, y: rect.y + Math.floor(rect.h / 2) };
-        case 'west': return { x: rect.x, y: rect.y + Math.floor(rect.h / 2) };
-    }
-}
+// ── Public utilities ────────────────────────────────────────────────────────
 export function applyOverride(state, rollId, value) {
     return {
         ...state,

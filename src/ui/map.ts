@@ -1,4 +1,4 @@
-import type { DungeonState, Room, Corridor, GridRect, Direction } from '../types.js';
+import type { DungeonState, Room, Corridor, GridRect, Direction, DoorType } from '../types.js';
 import { setState } from '../state.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -110,7 +110,6 @@ function setAttrs(elem: Element, attrs: Record<string, string | number>): void {
 }
 
 export function renderMap(state: DungeonState): void {
-  // Clear previous
   while (_mapGroup.firstChild) _mapGroup.removeChild(_mapGroup.firstChild);
 
   if (!state.started) {
@@ -118,20 +117,23 @@ export function renderMap(state: DungeonState): void {
     return;
   }
 
-  // Draw corridors first (below rooms)
+  // Corridors first (fills only, under rooms)
   for (const corridor of state.corridors) {
-    renderCorridor(corridor, state);
+    renderCorridorFill(corridor);
   }
 
-  // Draw rooms
+  // Room fills + walls. Walls are drawn with gaps/doors at exits.
   for (const room of state.rooms) {
-    renderRoom(room, state.selectedRoomId === room.id);
+    renderRoom(room, state.selectedRoomId === room.id, state.corridors);
   }
 
-  // Entrance marker
+  // Passage door symbols (on corridor stubs — drawn after rooms so they sit on top)
+  for (const corridor of state.corridors) {
+    if (corridor.doorType) renderPassageDoor(corridor);
+  }
+
   renderEntrance();
 
-  // Cursor indicators
   for (const cursor of state.cursors) {
     renderCursor(cursor.position);
   }
@@ -158,112 +160,224 @@ function renderEntrance(): void {
   _mapGroup.appendChild(g);
 }
 
-function renderCorridor(corridor: Corridor, state: DungeonState): void {
+// Draws only the corridor fill rectangle. Door symbols for passage doors are
+// drawn separately after rooms so they sit on top of both.
+function renderCorridorFill(corridor: Corridor): void {
   const r = svgRect(corridor.rect);
   const rect = el<SVGRectElement>('rect');
   setAttrs(rect, {
-    x: r.x, y: r.y, width: Math.max(r.w, 1), height: Math.max(r.h, 1),
+    x: r.x, y: r.y,
+    width: Math.max(r.w, CELL * 0.5),
+    height: Math.max(r.h, CELL * 0.5),
     class: 'map-corridor',
   });
   _mapGroup.appendChild(rect);
-
-  // Check if this corridor has a door — look for an exit in a connected room that references it
-  const door = findDoorForCorridor(corridor.id, state);
-  if (door) {
-    renderDoorOnCorridor(r, corridor.direction, door);
-  }
 }
 
-function findDoorForCorridor(corridorId: string, state: DungeonState): string | null {
-  for (const room of state.rooms) {
-    for (const exit of room.exits) {
-      if (exit.corridorId === corridorId && exit.doorType) {
-        return exit.doorType;
-      }
-    }
-  }
-  return null;
+// Door symbol on a passage-door stub corridor (not a room exit).
+// Drawn as a perpendicular bar at the entry face of the corridor.
+function renderPassageDoor(corridor: Corridor): void {
+  const r = svgRect(corridor.rect);
+  drawDoorSymbol(r, corridor.direction, corridor.doorType!);
 }
 
-function renderDoorOnCorridor(r: { x: number; y: number; w: number; h: number }, dir: Direction, doorType: string): void {
-  const isSecret = doorType === 'stone_secret';
-  const isLocked = doorType === 'wooden_locked' || doorType === 'iron';
-
-  let dx: number, dy: number, dw: number, dh: number;
+// Draws a door symbol at the ENTRY face of a corridor rect.
+// The entry face is the end closest to the previous element.
+function drawDoorSymbol(
+  r: { x: number; y: number; w: number; h: number },
+  dir: Direction,
+  doorType: DoorType,
+): void {
+  // Bar across the full width/height of the corridor at the entry face
+  let bx: number, by: number, bw: number, bh: number;
   if (dir === 'north' || dir === 'south') {
-    const mx = r.x + r.w / 2;
-    const my = r.y + r.h / 2;
-    dx = mx - 1; dy = my - CELL * 0.4; dw = 2; dh = CELL * 0.8;
+    // Entry face: south end for north corridor (large y), north end for south
+    const ey = dir === 'north' ? r.y + r.h : r.y;
+    bx = r.x; by = ey - 1; bw = r.w; bh = 3;
   } else {
-    const mx = r.x + r.w / 2;
-    const my = r.y + r.h / 2;
-    dx = mx - CELL * 0.4; dy = my - 1; dw = CELL * 0.8; dh = 2;
+    // Entry face: east end for west corridor (large x), west end for east
+    const ex = dir === 'east' ? r.x : r.x + r.w;
+    bx = ex - 1; by = r.y; bw = 3; bh = r.h;
   }
 
-  if (isSecret) {
+  if (doorType === 'stone_secret') {
+    const gap = el<SVGRectElement>('rect');
+    setAttrs(gap, { x: bx, y: by, width: bw, height: bh, fill: 'white', stroke: 'none' });
+    _mapGroup.appendChild(gap);
     const txt = el<SVGTextElement>('text');
     setAttrs(txt, {
-      x: r.x + r.w / 2, y: r.y + r.h / 2,
-      'font-family': 'Courier New', 'font-size': 9, fill: '#1a1a1a',
+      x: bx + bw / 2, y: by + bh / 2,
+      'font-family': 'Courier New', 'font-size': 8, fill: '#1a1a1a',
       'dominant-baseline': 'middle', 'text-anchor': 'middle',
     });
     txt.textContent = 'S';
     _mapGroup.appendChild(txt);
-  } else {
-    const doorRect = el<SVGRectElement>('rect');
-    setAttrs(doorRect, { x: dx, y: dy, width: dw, height: dh, class: 'map-door' });
-    _mapGroup.appendChild(doorRect);
+    return;
+  }
 
-    if (isLocked) {
-      const cx = r.x + r.w / 2;
-      const cy = r.y + r.h / 2;
-      const circ = el<SVGCircleElement>('circle');
-      setAttrs(circ, { cx, cy, r: 3, class: 'map-door-circle' });
-      _mapGroup.appendChild(circ);
+  if (doorType === 'archway') {
+    // Archway = opening; nothing to draw for the door symbol itself
+    return;
+  }
+
+  const bar = el<SVGRectElement>('rect');
+  setAttrs(bar, { x: bx, y: by, width: bw, height: bh, class: 'map-door' });
+  _mapGroup.appendChild(bar);
+
+  if (doorType === 'wooden_locked' || doorType === 'iron') {
+    const circ = el<SVGCircleElement>('circle');
+    setAttrs(circ, { cx: bx + bw / 2, cy: by + bh / 2, r: 2.5, fill: 'white', stroke: '#1a1a1a', 'stroke-width': 1 });
+    _mapGroup.appendChild(circ);
+  }
+  if (doorType === 'portcullis') {
+    // Small vertical bars across the opening to suggest a portcullis
+    const bars = dir === 'north' || dir === 'south' ? Math.max(2, Math.round(bw / 6)) : Math.max(2, Math.round(bh / 6));
+    for (let i = 1; i < bars; i++) {
+      const line = el<SVGLineElement>('line');
+      if (dir === 'north' || dir === 'south') {
+        const lx = bx + (bw / bars) * i;
+        setAttrs(line, { x1: lx, y1: by, x2: lx, y2: by + bh, stroke: 'white', 'stroke-width': 1 });
+      } else {
+        const ly = by + (bh / bars) * i;
+        setAttrs(line, { x1: bx, y1: ly, x2: bx + bw, y2: ly, stroke: 'white', 'stroke-width': 1 });
+      }
+      _mapGroup.appendChild(line);
     }
   }
 }
 
-function renderRoom(room: Room, selected: boolean): void {
+function renderRoom(room: Room, selected: boolean, corridors: Corridor[]): void {
   const r = svgRect(room.rect);
+  const fill = selected ? '#ede8de' : 'white';
 
+  // 1. Room fill (no stroke — walls drawn separately so we can cut gaps)
   if (room.shape === 'circle') {
-    const cx = r.x + r.w / 2;
-    const cy = r.y + r.h / 2;
-    const rx = r.w / 2;
-    const ry = r.h / 2;
     const ellipse = el<SVGEllipseElement>('ellipse');
     setAttrs(ellipse, {
-      cx, cy, rx, ry,
-      class: selected ? 'map-room selected' : 'map-room',
-      'data-room-id': room.id,
-      style: 'cursor:pointer',
+      cx: r.x + r.w / 2, cy: r.y + r.h / 2,
+      rx: r.w / 2, ry: r.h / 2,
+      fill, stroke: 'none',
+      'data-room-id': room.id, style: 'cursor:pointer',
     });
     ellipse.addEventListener('click', () => selectRoom(room.id));
     _mapGroup.appendChild(ellipse);
   } else {
-    const rect = el<SVGRectElement>('rect');
-    setAttrs(rect, {
+    const fillRect = el<SVGRectElement>('rect');
+    setAttrs(fillRect, {
       x: r.x, y: r.y, width: r.w, height: r.h,
-      class: selected ? 'map-room selected' : 'map-room',
-      'data-room-id': room.id,
-      style: 'cursor:pointer',
+      fill, stroke: 'none',
+      'data-room-id': room.id, style: 'cursor:pointer',
     });
-    rect.addEventListener('click', () => selectRoom(room.id));
-    _mapGroup.appendChild(rect);
+    fillRect.addEventListener('click', () => selectRoom(room.id));
+    _mapGroup.appendChild(fillRect);
   }
 
-  // Room number label
+  // 2. Room walls — ellipse for circles, rect for everything else
+  if (room.shape === 'circle') {
+    const borderEll = el<SVGEllipseElement>('ellipse');
+    setAttrs(borderEll, {
+      cx: r.x + r.w / 2, cy: r.y + r.h / 2,
+      rx: r.w / 2, ry: r.h / 2,
+      fill: 'none', stroke: '#1a1a1a', 'stroke-width': 2,
+      'pointer-events': 'none',
+    });
+    _mapGroup.appendChild(borderEll);
+  } else {
+    const border = el<SVGRectElement>('rect');
+    setAttrs(border, {
+      x: r.x, y: r.y, width: r.w, height: r.h,
+      fill: 'none', stroke: '#1a1a1a', 'stroke-width': 2,
+      'pointer-events': 'none',
+    });
+    _mapGroup.appendChild(border);
+  }
+
+  // 3. For each exit, cut a gap and optionally draw a door at the wall boundary
+  for (const exit of room.exits) {
+    if (!exit.corridorId) continue;
+    const corridor = corridors.find(c => c.id === exit.corridorId);
+    if (!corridor) continue;
+    renderExitOpening(r, exit.direction, exit.doorType, corridor);
+  }
+
+  // 4. Room number label
   const roomIndex = parseInt(room.id.split('_')[1] ?? '0');
   const txt = el<SVGTextElement>('text');
   setAttrs(txt, {
-    x: r.x + r.w / 2,
-    y: r.y + r.h / 2,
-    class: 'map-label',
-    'pointer-events': 'none',
+    x: r.x + r.w / 2, y: r.y + r.h / 2,
+    class: 'map-label', 'pointer-events': 'none',
   });
   txt.textContent = String(roomIndex);
   _mapGroup.appendChild(txt);
+}
+
+// Cuts a gap in the room wall at the exit opening and draws a door symbol if present.
+// The room wall stroke is 2px centred on the rect edge, so the eraser strip is 3px.
+function renderExitOpening(
+  r: { x: number; y: number; w: number; h: number },
+  dir: Direction,
+  doorType: DoorType | undefined,
+  corridor: Corridor,
+): void {
+  const cr = svgRect(corridor.rect);
+
+  // Position of the wall strip to erase/replace
+  let gx: number, gy: number, gw: number, gh: number;
+  switch (dir) {
+    case 'north': gx = cr.x; gy = r.y - 2;       gw = cr.w; gh = 4; break;
+    case 'south': gx = cr.x; gy = r.y + r.h - 2; gw = cr.w; gh = 4; break;
+    case 'east':  gx = r.x + r.w - 2; gy = cr.y; gw = 4; gh = cr.h; break;
+    case 'west':  gx = r.x - 2;       gy = cr.y; gw = 4; gh = cr.h; break;
+  }
+
+  // Always erase the wall stroke first
+  const gap = el<SVGRectElement>('rect');
+  setAttrs(gap, { x: gx, y: gy, width: gw, height: gh, fill: 'white', stroke: 'none' });
+  _mapGroup.appendChild(gap);
+
+  if (!doorType || doorType === 'archway') return;
+
+  if (doorType === 'stone_secret') {
+    const txt = el<SVGTextElement>('text');
+    setAttrs(txt, {
+      x: gx + gw / 2, y: gy + gh / 2,
+      'font-family': 'Courier New', 'font-size': 8, fill: '#1a1a1a',
+      'dominant-baseline': 'middle', 'text-anchor': 'middle',
+    });
+    txt.textContent = 'S';
+    _mapGroup.appendChild(txt);
+    return;
+  }
+
+  // Door bar drawn directly at the gap position — on the wall, not inside the room
+  const bar = el<SVGRectElement>('rect');
+  setAttrs(bar, { x: gx, y: gy, width: gw, height: gh, class: 'map-door' });
+  _mapGroup.appendChild(bar);
+
+  if (doorType === 'wooden_locked' || doorType === 'iron') {
+    const circ = el<SVGCircleElement>('circle');
+    setAttrs(circ, {
+      cx: gx + gw / 2, cy: gy + gh / 2, r: 2.5,
+      fill: 'white', stroke: '#1a1a1a', 'stroke-width': 1,
+    });
+    _mapGroup.appendChild(circ);
+  }
+
+  if (doorType === 'portcullis') {
+    const isHoriz = dir === 'north' || dir === 'south';
+    const barCount = isHoriz ? Math.max(2, Math.round(gw / 6)) : Math.max(2, Math.round(gh / 6));
+    for (let i = 1; i < barCount; i++) {
+      const line = el<SVGLineElement>('line');
+      if (isHoriz) {
+        const lx = gx + (gw / barCount) * i;
+        setAttrs(line, { x1: lx, y1: gy, x2: lx, y2: gy + gh, stroke: 'white', 'stroke-width': 1 });
+      } else {
+        const ly = gy + (gh / barCount) * i;
+        setAttrs(line, { x1: gx, y1: ly, x2: gx + gw, y2: ly, stroke: 'white', 'stroke-width': 1 });
+      }
+      _mapGroup.appendChild(line);
+    }
+  }
 }
 
 function renderCursor(pos: { x: number; y: number }): void {
