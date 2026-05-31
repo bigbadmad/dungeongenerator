@@ -1,5 +1,6 @@
 import { setState, resetState } from '../state.js';
 import { generateStart, generateNext, applyOverride } from '../generator.js';
+import { TABLE_OPTIONS } from '../tableOptions.js';
 export function initControls() {
     const btnStart = document.getElementById('btn-start');
     const btnNext = document.getElementById('btn-next');
@@ -69,39 +70,30 @@ function buildRollCard(roll, state) {
     result.className = 'roll-card-result';
     result.textContent = roll.overridden ? (roll.overrideValue ?? roll.outcome) : roll.outcome;
     card.appendChild(result);
-    const actions = document.createElement('div');
-    actions.className = 'roll-card-actions';
-    const rerollBtn = document.createElement('button');
-    rerollBtn.className = 'small secondary';
-    rerollBtn.textContent = 'Reroll';
-    rerollBtn.addEventListener('click', () => {
-        // Re-apply the same table by re-running generation from that step is complex;
-        // instead we just mark it for manual override by focusing the input
-        overrideInput.focus();
-        overrideInput.select();
-    });
-    const overrideInput = document.createElement('input');
-    overrideInput.type = 'text';
-    overrideInput.className = 'roll-card-override';
-    overrideInput.placeholder = 'Override…';
-    overrideInput.value = roll.overrideValue ?? '';
-    const applyBtn = document.createElement('button');
-    applyBtn.className = 'small';
-    applyBtn.textContent = 'Apply';
-    applyBtn.addEventListener('click', () => {
-        const val = overrideInput.value.trim();
-        if (val) {
-            setState(s => applyOverride(s, roll.id, val));
+    const options = TABLE_OPTIONS[roll.table] ?? [];
+    if (options.length > 0) {
+        const actions = document.createElement('div');
+        actions.className = 'roll-card-actions';
+        const select = document.createElement('select');
+        select.className = 'roll-card-override';
+        for (const opt of options) {
+            const o = document.createElement('option');
+            o.value = opt.value.toString();
+            o.textContent = opt.label;
+            if (opt.value.toString() === roll.outcomeKey)
+                o.selected = true;
+            select.appendChild(o);
         }
-    });
-    overrideInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter')
-            applyBtn.click();
-    });
-    actions.appendChild(rerollBtn);
-    actions.appendChild(overrideInput);
-    actions.appendChild(applyBtn);
-    card.appendChild(actions);
+        actions.appendChild(select);
+        const applyBtn = document.createElement('button');
+        applyBtn.className = 'small';
+        applyBtn.textContent = 'Apply';
+        applyBtn.addEventListener('click', () => {
+            setState(s => applyOverride(s, roll.id, select.value));
+        });
+        actions.appendChild(applyBtn);
+        card.appendChild(actions);
+    }
     // Dim older cards slightly
     if (roll.step < state.stepCount - 1) {
         card.style.opacity = '0.7';

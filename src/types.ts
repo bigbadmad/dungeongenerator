@@ -137,6 +137,7 @@ export interface RollRecord {
   overridden: boolean;
   overrideValue?: string;
   step: number;
+  targetId?: string;
 }
 
 export interface DungeonSettings {

@@ -268,6 +268,7 @@ function extendWithDoor(cursor, step, rolls, occupied) {
         direction: cursor.direction,
         fromId: cursor.corridorId,
         toId: null,
+        doorType: doorEntry.value,
     };
     return {
         corridor,
@@ -451,6 +452,13 @@ function generateRoom(cursor, step, rolls, level, occupied) {
         });
         exits.push({ direction: exitDir, doorType, corridorId: cor.id, exitPoint: exitPt });
     }
+    // The corridor that brought the cursor here needs an opening in the entry wall.
+    // Add it as a no-door exit so renderExitOpening will cut the gap.
+    exits.push({
+        direction: entryDir,
+        corridorId: cursor.corridorId,
+        exitPoint: roomExitPoint(rect, entryDir),
+    });
     const room = {
         id: newId('room'),
         shape: shapeEntry.value,

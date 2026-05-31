@@ -1,4 +1,4 @@
-import type { DungeonState, Room, Corridor, GridRect, Direction, DoorType } from '../types.js';
+import type { DungeonState, Room, Corridor, GridRect, Direction, DoorType, GridPos } from '../types.js';
 import { setState } from '../state.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -123,9 +123,9 @@ export function renderMap(state: DungeonState): void {
   }
 
   // Room fills + walls. Walls are drawn with gaps/doors at exits.
-  for (const room of state.rooms) {
-    renderRoom(room, state.selectedRoomId === room.id, state.corridors);
-  }
+  state.rooms.forEach((room, i) => {
+    renderRoom(room, state.selectedRoomId === room.id, state.corridors, i + 1);
+  });
 
   // Passage door symbols (on corridor stubs — drawn after rooms so they sit on top)
   for (const corridor of state.corridors) {
@@ -174,83 +174,11 @@ function renderCorridorFill(corridor: Corridor): void {
   _mapGroup.appendChild(rect);
 }
 
-// Door symbol on a passage-door stub corridor (not a room exit).
-// Drawn as a perpendicular bar at the entry face of the corridor.
-function renderPassageDoor(corridor: Corridor): void {
-  const r = svgRect(corridor.rect);
-  drawDoorSymbol(r, corridor.direction, corridor.doorType!);
-}
-
-// Draws a door symbol at the ENTRY face of a corridor rect.
-// The entry face is the end closest to the previous element.
-function drawDoorSymbol(
-  r: { x: number; y: number; w: number; h: number },
-  dir: Direction,
-  doorType: DoorType,
-): void {
-  // Bar across the full width/height of the corridor at the entry face
-  let bx: number, by: number, bw: number, bh: number;
-  if (dir === 'north' || dir === 'south') {
-    // Entry face: south end for north corridor (large y), north end for south
-    const ey = dir === 'north' ? r.y + r.h : r.y;
-    bx = r.x; by = ey - 1; bw = r.w; bh = 3;
-  } else {
-    // Entry face: east end for west corridor (large x), west end for east
-    const ex = dir === 'east' ? r.x : r.x + r.w;
-    bx = ex - 1; by = r.y; bw = 3; bh = r.h;
-  }
-
-  if (doorType === 'stone_secret') {
-    const gap = el<SVGRectElement>('rect');
-    setAttrs(gap, { x: bx, y: by, width: bw, height: bh, fill: 'white', stroke: 'none' });
-    _mapGroup.appendChild(gap);
-    const txt = el<SVGTextElement>('text');
-    setAttrs(txt, {
-      x: bx + bw / 2, y: by + bh / 2,
-      'font-family': 'Courier New', 'font-size': 8, fill: '#1a1a1a',
-      'dominant-baseline': 'middle', 'text-anchor': 'middle',
-    });
-    txt.textContent = 'S';
-    _mapGroup.appendChild(txt);
-    return;
-  }
-
-  if (doorType === 'archway') {
-    // Archway = opening; nothing to draw for the door symbol itself
-    return;
-  }
-
-  const bar = el<SVGRectElement>('rect');
-  setAttrs(bar, { x: bx, y: by, width: bw, height: bh, class: 'map-door' });
-  _mapGroup.appendChild(bar);
-
-  if (doorType === 'wooden_locked' || doorType === 'iron') {
-    const circ = el<SVGCircleElement>('circle');
-    setAttrs(circ, { cx: bx + bw / 2, cy: by + bh / 2, r: 2.5, fill: 'white', stroke: '#1a1a1a', 'stroke-width': 1 });
-    _mapGroup.appendChild(circ);
-  }
-  if (doorType === 'portcullis') {
-    // Small vertical bars across the opening to suggest a portcullis
-    const bars = dir === 'north' || dir === 'south' ? Math.max(2, Math.round(bw / 6)) : Math.max(2, Math.round(bh / 6));
-    for (let i = 1; i < bars; i++) {
-      const line = el<SVGLineElement>('line');
-      if (dir === 'north' || dir === 'south') {
-        const lx = bx + (bw / bars) * i;
-        setAttrs(line, { x1: lx, y1: by, x2: lx, y2: by + bh, stroke: 'white', 'stroke-width': 1 });
-      } else {
-        const ly = by + (bh / bars) * i;
-        setAttrs(line, { x1: bx, y1: ly, x2: bx + bw, y2: ly, stroke: 'white', 'stroke-width': 1 });
-      }
-      _mapGroup.appendChild(line);
-    }
-  }
-}
-
-function renderRoom(room: Room, selected: boolean, corridors: Corridor[]): void {
+function renderRoom(room: Room, selected: boolean, corridors: Corridor[], roomNumber: number): void {
   const r = svgRect(room.rect);
   const fill = selected ? '#ede8de' : 'white';
 
-  // 1. Room fill (no stroke — walls drawn separately so we can cut gaps)
+  // 1. Room fill
   if (room.shape === 'circle') {
     const ellipse = el<SVGEllipseElement>('ellipse');
     setAttrs(ellipse, {
@@ -272,7 +200,7 @@ function renderRoom(room: Room, selected: boolean, corridors: Corridor[]): void 
     _mapGroup.appendChild(fillRect);
   }
 
-  // 2. Room walls — ellipse for circles, rect for everything else
+  // 2. Room border — ellipse for circles, rect for rectangles/squares/irregular
   if (room.shape === 'circle') {
     const borderEll = el<SVGEllipseElement>('ellipse');
     setAttrs(borderEll, {
@@ -292,55 +220,152 @@ function renderRoom(room: Room, selected: boolean, corridors: Corridor[]): void 
     _mapGroup.appendChild(border);
   }
 
-  // 3. For each exit, cut a gap and optionally draw a door at the wall boundary
+  // 3. Wall openings and door symbols for each exit
   for (const exit of room.exits) {
-    if (!exit.corridorId) continue;
-    const corridor = corridors.find(c => c.id === exit.corridorId);
-    if (!corridor) continue;
-    renderExitOpening(r, exit.direction, exit.doorType, corridor);
+    const corridor = exit.corridorId ? corridors.find(c => c.id === exit.corridorId) : null;
+    // Corridor perpendicular width in SVG px — used to size the opening
+    const perpWidth = corridor
+      ? ((exit.direction === 'north' || exit.direction === 'south')
+          ? corridor.rect.w * CELL
+          : corridor.rect.h * CELL)
+      : CELL;
+
+    renderWallOpening(exit.exitPoint, exit.direction, perpWidth);
+
+    if (exit.doorType) {
+      renderDoorSymbol(exit.exitPoint, exit.direction, exit.doorType);
+    }
   }
 
   // 4. Room number label
-  const roomIndex = parseInt(room.id.split('_')[1] ?? '0');
   const txt = el<SVGTextElement>('text');
   setAttrs(txt, {
     x: r.x + r.w / 2, y: r.y + r.h / 2,
     class: 'map-label', 'pointer-events': 'none',
   });
-  txt.textContent = String(roomIndex);
+  txt.textContent = String(roomNumber);
   _mapGroup.appendChild(txt);
 }
 
-// Cuts a gap in the room wall at the exit opening and draws a door symbol if present.
-// The room wall stroke is 2px centred on the rect edge, so the eraser strip is 3px.
-function renderExitOpening(
-  r: { x: number; y: number; w: number; h: number },
-  dir: Direction,
-  doorType: DoorType | undefined,
-  corridor: Corridor,
-): void {
-  const cr = svgRect(corridor.rect);
+// Draws a white rectangle over the room wall at an exit, erasing the stroke
+// to create a visible opening. corridorWidth is the perpendicular SVG extent.
+function renderWallOpening(exitPoint: GridPos, dir: Direction, corridorWidth: number): void {
+  const ex = exitPoint.x * CELL;
+  const ey = exitPoint.y * CELL;
+  const T = 4; // thickness — enough to cover the 2px stroke with subpixel margin
 
-  // Position of the wall strip to erase/replace
-  let gx: number, gy: number, gw: number, gh: number;
+  let rx: number, ry: number, rw: number, rh: number;
   switch (dir) {
-    case 'north': gx = cr.x; gy = r.y - 2;       gw = cr.w; gh = 4; break;
-    case 'south': gx = cr.x; gy = r.y + r.h - 2; gw = cr.w; gh = 4; break;
-    case 'east':  gx = r.x + r.w - 2; gy = cr.y; gw = 4; gh = cr.h; break;
-    case 'west':  gx = r.x - 2;       gy = cr.y; gw = 4; gh = cr.h; break;
+    // North exit: exitPoint is one cell north of the room. Wall at (exitPoint.y+1)*CELL.
+    case 'north':
+      rx = ex - corridorWidth / 2;
+      ry = (exitPoint.y + 1) * CELL - T / 2;
+      rw = corridorWidth; rh = T;
+      break;
+    // South exit: exitPoint is one cell south of the room. Wall at exitPoint.y*CELL.
+    case 'south':
+      rx = ex - corridorWidth / 2;
+      ry = ey - T / 2;
+      rw = corridorWidth; rh = T;
+      break;
+    // East exit: wall at exitPoint.x*CELL.
+    case 'east':
+      rx = ex - T / 2;
+      ry = ey - corridorWidth / 2;
+      rw = T; rh = corridorWidth;
+      break;
+    // West exit: exitPoint is one cell west of the room. Wall at (exitPoint.x+1)*CELL.
+    case 'west':
+      rx = (exitPoint.x + 1) * CELL - T / 2;
+      ry = ey - corridorWidth / 2;
+      rw = T; rh = corridorWidth;
+      break;
   }
 
-  // Always erase the wall stroke first
   const gap = el<SVGRectElement>('rect');
-  setAttrs(gap, { x: gx, y: gy, width: gw, height: gh, fill: 'white', stroke: 'none' });
+  setAttrs(gap, { x: rx, y: ry, width: rw, height: rh, fill: 'white', stroke: 'none' });
   _mapGroup.appendChild(gap);
+}
 
-  if (!doorType || doorType === 'archway') return;
+// Draws a door symbol at the room wall for an exit door.
+// The door sits ON the wall edge (one cell back from exitPoint in the exit direction).
+// Symbol is a thin perpendicular bar (2px travel × CELL*0.7 perpendicular).
+function renderDoorSymbol(exitPoint: GridPos, dir: Direction, doorType: DoorType): void {
+  if (doorType === 'archway') return;
 
+  const ex = exitPoint.x * CELL;
+  const ey = exitPoint.y * CELL;
+  const barLen = CELL * 0.7;  // perpendicular extent
+  const barThick = 2;          // extent along travel direction
+
+  let dx: number, dy: number, dw: number, dh: number;
+  switch (dir) {
+    case 'north':
+      dx = ex - barLen / 2;
+      dy = (exitPoint.y + 1) * CELL - barThick / 2;
+      dw = barLen; dh = barThick;
+      break;
+    case 'south':
+      dx = ex - barLen / 2;
+      dy = ey - barThick / 2;
+      dw = barLen; dh = barThick;
+      break;
+    case 'east':
+      dx = ex - barThick / 2;
+      dy = ey - barLen / 2;
+      dw = barThick; dh = barLen;
+      break;
+    case 'west':
+      dx = (exitPoint.x + 1) * CELL - barThick / 2;
+      dy = ey - barLen / 2;
+      dw = barThick; dh = barLen;
+      break;
+  }
+
+  drawDoorBar(dx, dy, dw, dh, dir, doorType);
+}
+
+// Passage-door stub: door sits at the entry face of the corridor rect
+// (the end closest to the element that spawned it).
+function renderPassageDoor(corridor: Corridor): void {
+  const r = svgRect(corridor.rect);
+  const barLen = CELL * 0.7;
+  const barThick = 2;
+  const cx = r.x + r.w / 2;
+  const cy = r.y + r.h / 2;
+
+  let dx: number, dy: number, dw: number, dh: number;
+  switch (corridor.direction) {
+    case 'north': // entry = south edge
+      dx = cx - barLen / 2; dy = r.y + r.h - barThick / 2;
+      dw = barLen; dh = barThick;
+      break;
+    case 'south': // entry = north edge
+      dx = cx - barLen / 2; dy = r.y - barThick / 2;
+      dw = barLen; dh = barThick;
+      break;
+    case 'east': // entry = west edge
+      dx = r.x - barThick / 2; dy = cy - barLen / 2;
+      dw = barThick; dh = barLen;
+      break;
+    case 'west': // entry = east edge
+      dx = r.x + r.w - barThick / 2; dy = cy - barLen / 2;
+      dw = barThick; dh = barLen;
+      break;
+  }
+
+  drawDoorBar(dx, dy, dw, dh, corridor.direction, corridor.doorType!);
+}
+
+// Shared door bar renderer used by both renderDoorSymbol and renderPassageDoor.
+function drawDoorBar(
+  dx: number, dy: number, dw: number, dh: number,
+  dir: Direction, doorType: DoorType,
+): void {
   if (doorType === 'stone_secret') {
     const txt = el<SVGTextElement>('text');
     setAttrs(txt, {
-      x: gx + gw / 2, y: gy + gh / 2,
+      x: dx + dw / 2, y: dy + dh / 2,
       'font-family': 'Courier New', 'font-size': 8, fill: '#1a1a1a',
       'dominant-baseline': 'middle', 'text-anchor': 'middle',
     });
@@ -349,15 +374,14 @@ function renderExitOpening(
     return;
   }
 
-  // Door bar drawn directly at the gap position — on the wall, not inside the room
   const bar = el<SVGRectElement>('rect');
-  setAttrs(bar, { x: gx, y: gy, width: gw, height: gh, class: 'map-door' });
+  setAttrs(bar, { x: dx, y: dy, width: dw, height: dh, class: 'map-door' });
   _mapGroup.appendChild(bar);
 
   if (doorType === 'wooden_locked' || doorType === 'iron') {
     const circ = el<SVGCircleElement>('circle');
     setAttrs(circ, {
-      cx: gx + gw / 2, cy: gy + gh / 2, r: 2.5,
+      cx: dx + dw / 2, cy: dy + dh / 2, r: 2,
       fill: 'white', stroke: '#1a1a1a', 'stroke-width': 1,
     });
     _mapGroup.appendChild(circ);
@@ -365,15 +389,14 @@ function renderExitOpening(
 
   if (doorType === 'portcullis') {
     const isHoriz = dir === 'north' || dir === 'south';
-    const barCount = isHoriz ? Math.max(2, Math.round(gw / 6)) : Math.max(2, Math.round(gh / 6));
-    for (let i = 1; i < barCount; i++) {
+    for (let i = 1; i < 3; i++) {
       const line = el<SVGLineElement>('line');
       if (isHoriz) {
-        const lx = gx + (gw / barCount) * i;
-        setAttrs(line, { x1: lx, y1: gy, x2: lx, y2: gy + gh, stroke: 'white', 'stroke-width': 1 });
+        const lx = dx + (dw / 3) * i;
+        setAttrs(line, { x1: lx, y1: dy, x2: lx, y2: dy + dh, stroke: 'white', 'stroke-width': 0.5 });
       } else {
-        const ly = gy + (gh / barCount) * i;
-        setAttrs(line, { x1: gx, y1: ly, x2: gx + gw, y2: ly, stroke: 'white', 'stroke-width': 1 });
+        const ly = dy + (dh / 3) * i;
+        setAttrs(line, { x1: dx, y1: ly, x2: dx + dw, y2: ly, stroke: 'white', 'stroke-width': 0.5 });
       }
       _mapGroup.appendChild(line);
     }
