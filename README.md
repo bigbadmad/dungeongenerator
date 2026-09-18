@@ -52,7 +52,8 @@ npm test         # run the test suite (vitest)
 2. Click **Generate Next** repeatedly to extend the dungeon — each click
    resolves the next open passage/room cursor.
 3. Review rolls in the roll log on the left; use the dropdown + **Apply** on
-   any roll to override its outcome and regenerate from that point forward.
+   supported rolls to update the displayed outcome. Overrides do not currently
+   regenerate the dungeon.
 4. Use **Save** / **Load** to persist a dungeon to a JSON file, or **Export
    PNG** to save the current map as an image.
 
