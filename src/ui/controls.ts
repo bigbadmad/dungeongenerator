@@ -132,7 +132,8 @@ function buildRollCard(roll: RollRecord, state: DungeonState): HTMLDivElement {
     card.appendChild(was);
   }
 
-  const options = TABLE_OPTIONS[roll.table];
+  // Only real dice rolls can be overridden; log-only events have no die.
+  const options = roll.sides > 0 ? TABLE_OPTIONS[roll.table] : undefined;
   if (options && options.length > 0) {
     const actions = document.createElement('div');
     actions.className = 'roll-card-actions';

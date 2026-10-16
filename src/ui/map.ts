@@ -1,5 +1,6 @@
 import type { DungeonState, Room, Corridor, Direction, DoorType, GridRect } from '../types.js';
 import { setState } from '../state.js';
+import { exportCanvasWidth } from '../exportLayout.js';
 import {
   buildOwners,
   buildLinks,
@@ -470,25 +471,41 @@ export function exportPNG(): void {
   const url = URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(svg)], { type: 'image/svg+xml;charset=utf-8' }));
   const img = new Image();
   img.onload = () => {
+    const mapW = vbW * scale;
+    const mapH = vbH * scale;
+    const font = `${10 * scale}px Courier New`;
+    const margin = 12 * scale;
+    const gap = 6 * scale;
+    const barW = 10 * CELL * scale; // 50 ft
+    const caption = `Seed ${state.seed} · level ${state.settings.level} · ${state.rooms.length} rooms`;
+
+    // A narrow dungeon can be thinner than its own footer, so widen the canvas
+    // (leaving the map at the same scale, centred) until both labels fit.
+    const probe = document.createElement('canvas').getContext('2d')!;
+    probe.font = font;
+    const width = exportCanvasWidth(mapW, {
+      margin, gap, barWidth: barW,
+      scaleLabelWidth: probe.measureText('50 ft').width,
+      captionWidth: probe.measureText(caption).width,
+    });
+
     const canvas = document.createElement('canvas');
-    canvas.width = vbW * scale;
-    canvas.height = vbH * scale + footer * scale;
+    canvas.width = width;
+    canvas.height = mapH + footer * scale;
     const ctx = canvas.getContext('2d')!;
     ctx.fillStyle = '#faf8f3';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(img, 0, 0, vbW * scale, vbH * scale);
+    ctx.drawImage(img, (width - mapW) / 2, 0, mapW, mapH);
 
-    // Scale bar (50 ft) and caption
-    const y = vbH * scale + (footer / 2) * scale;
-    const barW = 10 * CELL * scale;
+    const y = mapH + (footer / 2) * scale;
     ctx.fillStyle = INK;
-    ctx.fillRect(12 * scale, y - 3 * scale, barW, 6 * scale);
-    ctx.font = `${10 * scale}px Courier New`;
+    ctx.fillRect(margin, y - 3 * scale, barW, 6 * scale);
+    ctx.font = font;
     ctx.textBaseline = 'middle';
-    ctx.fillText('50 ft', 12 * scale + barW + 6 * scale, y);
-    const caption = `Seed ${state.seed} · level ${state.settings.level} · ${state.rooms.length} rooms`;
+    ctx.textAlign = 'left';
+    ctx.fillText('50 ft', margin + barW + gap, y);
     ctx.textAlign = 'right';
-    ctx.fillText(caption, canvas.width - 12 * scale, y);
+    ctx.fillText(caption, width - margin, y);
 
     const link = document.createElement('a');
     link.download = `dungeon-${state.seed}.png`;

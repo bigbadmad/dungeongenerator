@@ -153,6 +153,11 @@ export interface GenerationCursor {
   width: number;
   zone: number;
   forced?: ForcedAction;
+  /**
+   * Lineage of this cursor ("e.0.2" = third child of the entrance's first
+   * child). Stable under replay, so rooms can be identified by it.
+   */
+  path: string;
 }
 
 export interface RollRecord {
@@ -198,4 +203,20 @@ export interface DungeonState {
   overrides: Record<string, string>;
   /** zone id -> dominant monster name. */
   zones: Record<string, string>;
+  /**
+   * How many steps the user has asked for. Replay targets this rather than
+   * `stepCount`, which an override can shorten by ending the dungeon early.
+   */
+  targetSteps: number;
+  /** Notes whose room disappeared when an override changed the layout. */
+  orphanedNotes: OrphanedNote[];
+}
+
+export interface OrphanedNote {
+  /** What the room used to be, e.g. "Rectangular room, 30×40 ft". */
+  label: string;
+  notes: string;
+  /** Identity of the vanished room; the note returns if the same room reappears. */
+  roomId: string;
+  sig: string;
 }

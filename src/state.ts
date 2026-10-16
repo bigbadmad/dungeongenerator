@@ -48,7 +48,11 @@ export function loadFromJSON(json: string): LoadResult {
     if (parsed.version !== 2) {
       return { ok: false, reason: 'This file was saved by an older version and can no longer be opened.' };
     }
-    _state = parsed as DungeonState;
+    const loaded = parsed as DungeonState;
+    loaded.targetSteps ??= loaded.stepCount;
+    loaded.orphanedNotes ??= [];
+    for (const c of loaded.cursors) c.path ??= 'e';
+    _state = loaded;
     _listeners.forEach(fn => fn());
     return { ok: true };
   } catch {

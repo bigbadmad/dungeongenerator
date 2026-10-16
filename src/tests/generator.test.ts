@@ -336,3 +336,107 @@ describe('buildRoomDescription', () => {
     }
   });
 });
+
+// ── Regressions from PR review ─────────────────────────────────────────────
+
+describe('zone inhabitant overrides', () => {
+  it('a forced inhabitant that is not level-eligible can still appear', () => {
+    let trolls = 0;
+    for (const seed of SEEDS.slice(0, 10)) {
+      const base = generateAll(generateStart(createInitialState({ size: 'medium', level: 1 }, seed)));
+      const overrides = { ...base.overrides };
+      for (const r of base.rollHistory) if (r.table === 'Zone Inhabitants') overrides[r.key] = 'Troll';
+      const forced = regenerate({ ...base, overrides });
+      trolls += forced.rollHistory.filter(r => r.table === 'Monster' && r.outcomeKey === 'Troll').length;
+    }
+    // Trolls are not in the level-1 table; forcing them must give them a chance.
+    expect(trolls).toBeGreaterThan(0);
+  });
+});
+
+describe('undo after an override that ends the dungeon early', () => {
+  it('restores the full dungeon, not just the shortened prefix', () => {
+    let found = false;
+    for (const seed of SEEDS) {
+      const original = full(seed, 'small');
+      for (let step = 2; step < original.stepCount && !found; step++) {
+        const key = `${step}|Periodic Check|1`;
+        if (!original.rollHistory.some(r => r.key === key)) continue;
+        const cut = applyOverride(original, key, 'dead_end');
+        if (cut.stepCount >= original.stepCount) continue;
+        found = true;
+        expect(cut.targetSteps).toBe(original.targetSteps);
+        expect(clearOverride(cut, key)).toEqual(original);
+      }
+      if (found) break;
+    }
+    expect(found, 'no seed produced an early-ending override to test').toBe(true);
+  });
+});
+
+describe('room identity and notes across replay', () => {
+  const annotate = (s: DungeonState): DungeonState => ({
+    ...s, rooms: s.rooms.map(r => ({ ...r, notes: `note for ${r.id}` })),
+  });
+
+  it('room ids come from lineage, not allocation order', () => {
+    const s = full(77, 'large');
+    expect(s.rooms.length).toBeGreaterThan(0);
+    for (const r of s.rooms) expect(r.id.startsWith('room@e.')).toBe(true);
+    expect(new Set(s.rooms.map(r => r.id)).size).toBe(s.rooms.length);
+  });
+
+  it('never attaches a note to a different room, and keeps notes that lose their room', () => {
+    let changed = 0, orphaned = 0;
+    for (const seed of SEEDS.slice(0, 6)) {
+      const original = annotate(full(seed, 'large'));
+      for (const step of [1, 2, 3, 4]) {
+        const key = `${step}|Periodic Check|1`;
+        for (const value of ['dead_end', 'chamber', 'turn']) {
+          const result = applyOverride(original, key, value);
+          const oldById = new Map(original.rooms.map(r => [r.id, r]));
+          for (const r of result.rooms) {
+            if (!r.notes) continue;
+            const was = oldById.get(r.id)!;
+            expect(was, 'note appeared on a room that did not exist').toBeDefined();
+            expect(r.notes).toBe(was.notes);
+            expect(r.rect).toEqual(was.rect); // same footprint, so genuinely the same room
+          }
+          const kept = result.rooms.filter(r => r.notes).length;
+          // Every note is either still on its room or preserved as an orphan.
+          expect(kept + result.orphanedNotes.length).toBe(original.rooms.length);
+          if (result.rooms.some(r => !oldById.has(r.id) || !r.notes)) changed++;
+          orphaned += result.orphanedNotes.length;
+        }
+      }
+    }
+    expect(changed).toBeGreaterThan(0);
+    expect(orphaned).toBeGreaterThan(0);
+  });
+
+  it('orphaned notes return when the original layout is restored', () => {
+    const original = annotate(full(5, 'large'));
+    for (const step of [1, 2, 3, 4, 5, 6]) {
+      const key = `${step}|Periodic Check|1`;
+      const overridden = applyOverride(original, key, 'dead_end');
+      if (overridden.orphanedNotes.length === 0) continue;
+      const restored = clearOverride(overridden, key);
+      expect(restored.orphanedNotes).toEqual([]);
+      expect(restored.rooms.map(r => r.notes)).toEqual(original.rooms.map(r => r.notes));
+      return;
+    }
+    throw new Error('no override orphaned any notes');
+  });
+});
+
+describe('log-only events', () => {
+  it('never share a table name with an overridable roll', () => {
+    const rolled = new Set<string>();
+    const events = new Set<string>();
+    for (const seed of SEEDS.slice(0, 10)) {
+      for (const r of full(seed, 'large').rollHistory) (r.sides > 0 ? rolled : events).add(r.table);
+    }
+    expect(events.size).toBeGreaterThan(0);
+    for (const e of events) expect(rolled.has(e), `"${e}" is both a roll and an event`).toBe(false);
+  });
+});

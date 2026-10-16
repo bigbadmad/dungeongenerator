@@ -25,7 +25,10 @@ outcome by hand.
 - **Working overrides** — press **Change** on any roll, pick a different
   outcome and **Apply**: the dungeon is regenerated from the seed with that
   result forced, and everything after it follows on. **Undo** puts the
-  natural roll back. Room notes survive regeneration.
+  natural roll back. Room notes stay with the same room (matched by identity and
+  footprint); if an override removes or reshapes a room its note is kept in a
+  "Notes from rooms that changed" box under the Room Key, and returns if the
+  room does (e.g. on Undo).
   Overrides are keyed by step and table, so after forcing an early roll,
   later overrides may land on different rolls if the layout has changed.
 - **Proper junctions** — turns, side passages, T/X/Y intersections and 45°

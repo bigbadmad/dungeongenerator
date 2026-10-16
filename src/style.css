@@ -319,6 +319,14 @@ select {
   margin-top: 2px;
 }
 
+.room-key-orphans {
+  margin-top: 8px;
+  padding: 6px;
+  border: 1px dashed #b45309;
+  background: #fdf6e8;
+  font-size: 11px;
+}
+
 .room-key-notes-editor {
   width: 100%;
   font-family: inherit;
