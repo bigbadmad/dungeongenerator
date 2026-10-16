@@ -5,12 +5,9 @@ import {
   generateStart,
   generateNext,
   generateAll,
-  applyOverride,
-  clearOverride,
   roomTarget,
 } from '../generator.js';
 import { hashSeed, randomSeed } from '../rng.js';
-import { TABLE_OPTIONS } from '../tableOptions.js';
 import { fitView } from './map.js';
 
 function readSettings() {
@@ -103,7 +100,7 @@ export function renderRollResults(state: DungeonState): void {
 
 function buildRollCard(roll: RollRecord, state: DungeonState): HTMLDivElement {
   const card = document.createElement('div');
-  card.className = 'roll-card' + (roll.overridden ? ' overridden' : '');
+  card.className = 'roll-card';
 
   const header = document.createElement('div');
   header.className = 'roll-card-header';
@@ -124,55 +121,6 @@ function buildRollCard(roll: RollRecord, state: DungeonState): HTMLDivElement {
   result.className = 'roll-card-result';
   result.textContent = roll.outcome;
   card.appendChild(result);
-
-  if (roll.overridden) {
-    const was = document.createElement('div');
-    was.className = 'roll-card-was';
-    was.textContent = `forced (rolled: ${roll.naturalOutcome ?? '?'})`;
-    card.appendChild(was);
-  }
-
-  // Only real dice rolls can be overridden; log-only events have no die.
-  const options = roll.sides > 0 ? TABLE_OPTIONS[roll.table] : undefined;
-  if (options && options.length > 0) {
-    const actions = document.createElement('div');
-    actions.className = 'roll-card-actions';
-
-    const change = document.createElement('button');
-    change.className = 'small secondary';
-    change.textContent = 'Change';
-    change.addEventListener('click', () => {
-      actions.innerHTML = '';
-
-      const select = document.createElement('select');
-      select.className = 'roll-card-override';
-      for (const opt of options) {
-        const o = document.createElement('option');
-        o.value = String(opt.value);
-        o.textContent = opt.label;
-        if (String(opt.value) === roll.outcomeKey) o.selected = true;
-        select.appendChild(o);
-      }
-      actions.appendChild(select);
-
-      const apply = document.createElement('button');
-      apply.className = 'small';
-      apply.textContent = 'Apply';
-      apply.title = 'Force this result and regenerate everything that follows';
-      apply.addEventListener('click', () => setState(s => applyOverride(s, roll.key, select.value)));
-      actions.appendChild(apply);
-    });
-    actions.appendChild(change);
-
-    if (roll.overridden) {
-      const undo = document.createElement('button');
-      undo.className = 'small secondary';
-      undo.textContent = 'Undo';
-      undo.addEventListener('click', () => setState(s => clearOverride(s, roll.key)));
-      actions.appendChild(undo);
-    }
-    card.appendChild(actions);
-  }
 
   if (roll.step < state.stepCount - 1) card.style.opacity = '0.8';
   return card;

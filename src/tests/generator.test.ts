@@ -4,9 +4,6 @@ import {
   generateStart,
   generateNext,
   generateAll,
-  regenerate,
-  applyOverride,
-  clearOverride,
   advance,
   turnLeft,
   turnRight,
@@ -18,11 +15,10 @@ import {
 } from '../generator.js';
 import { roomCells, rectCells, buildLinks, posKey } from '../geometry.js';
 import { entryForDie, ROOM_SHAPE } from '../tables.js';
-import { TABLE_OPTIONS } from '../tableOptions.js';
 import type { DungeonState, DungeonSize, Direction } from '../types.js';
 
-function started(seed = 1, size: DungeonSize = 'medium', overrides: Record<string, string> = {}): DungeonState {
-  return generateStart(createInitialState({ size, level: 3 }, seed, overrides));
+function started(seed = 1, size: DungeonSize = 'medium'): DungeonState {
+  return generateStart(createInitialState({ size, level: 3 }, seed));
 }
 
 function full(seed: number, size: DungeonSize = 'medium'): DungeonState {
@@ -91,11 +87,6 @@ describe('determinism', () => {
     const reloaded = JSON.parse(JSON.stringify(s)) as DungeonState;
     expect(generateNext(reloaded)).toEqual(generateNext(s));
   });
-
-  it('regenerating without overrides reproduces the dungeon exactly', () => {
-    const s = full(77);
-    expect(regenerate(s)).toEqual(s);
-  });
 });
 
 describe('dice', () => {
@@ -106,21 +97,9 @@ describe('dice', () => {
         if (r.sides === 0) continue;
         expect(r.diceResult).toBeGreaterThanOrEqual(1);
         expect(r.diceResult).toBeLessThanOrEqual(r.sides);
-        if (r.table === 'Room Shape' && !r.overridden) {
+        if (r.table === 'Room Shape') {
           expect(entryForDie(ROOM_SHAPE, r.diceResult).label).toBe(r.outcome);
         }
-      }
-    }
-  });
-
-  it('every logged roll can be overridden with its own outcome', () => {
-    for (const seed of SEEDS.slice(0, 8)) {
-      const s = full(seed);
-      for (const r of s.rollHistory) {
-        if (r.sides === 0) continue;
-        const options = TABLE_OPTIONS[r.table];
-        expect(options, `no override options for table "${r.table}"`).toBeDefined();
-        expect(options.map(o => String(o.value)), `${r.table} → ${r.outcomeKey}`).toContain(r.outcomeKey);
       }
     }
   });
@@ -241,29 +220,37 @@ describe('geometry of generated dungeons', () => {
 });
 
 describe('passage branches', () => {
-  // Step 1 resolves the cursor left by generateStart; force what it rolls.
-  const force = (periodic: string, extra: Record<string, string> = {}) =>
-    generateNext(started(11, 'medium', { '1|Periodic Check|1': periodic, ...extra }));
+  // Finds a seed whose first resolved step naturally rolls the given outcomes,
+  // so each branch shape can be checked without forcing any dice.
+  function firstStepWith(want: Record<string, string>): DungeonState {
+    for (let seed = 0; seed < 30000; seed++) {
+      const s = generateNext(started(seed));
+      const hit = Object.entries(want).every(([table, key]) =>
+        s.rollHistory.some(r => r.step === 1 && r.table === table && r.outcomeKey === key));
+      if (hit) return s;
+    }
+    throw new Error(`no seed rolls ${JSON.stringify(want)} at step 1`);
+  }
 
   it('an X intersection grows three branches', () => {
-    const s = force('turn', { '1|Turn Type|1': 'x_intersection' });
+    const s = firstStepWith({ 'Periodic Check': 'turn', 'Turn Type': 'x_intersection' });
     expect(s.cursors).toHaveLength(3);
     expect(new Set(s.cursors.map(c => c.direction)).size).toBe(3);
   });
 
   it('a T intersection grows two branches, neither straight ahead', () => {
-    const s = force('turn', { '1|Turn Type|1': 't_intersection' });
+    const s = firstStepWith({ 'Periodic Check': 'turn', 'Turn Type': 't_intersection' });
     expect(s.cursors).toHaveLength(2);
     expect(s.cursors.map(c => c.direction).sort()).toEqual(['east', 'west']);
   });
 
   it('a side passage keeps the main passage going', () => {
-    const s = force('side_passage', { '1|Side Passage|1': 'left' });
+    const s = firstStepWith({ 'Periodic Check': 'side_passage', 'Side Passage': 'left' });
     expect(s.cursors.map(c => c.direction).sort()).toEqual(['north', 'west']);
   });
 
   it('a 45° turn is a jog that bends back to the original heading', () => {
-    const s = force('turn', { '1|Turn Type|1': 'left_45_ahead' });
+    const s = firstStepWith({ 'Periodic Check': 'turn', 'Turn Type': 'left_45_ahead' });
     expect(s.cursors).toHaveLength(1);
     expect(s.cursors[0].direction).toBe('west');
     expect(s.cursors[0].forced).toEqual({ kind: 'bend', dir: 'north' });
@@ -273,56 +260,40 @@ describe('passage branches', () => {
   });
 
   it('a side door leads straight into a chamber', () => {
-    const s = force('door', { '1|Door Location|1': 'left' });
+    const s = firstStepWith({ 'Periodic Check': 'door', 'Door Location': 'left' });
     const forced = s.cursors.find(c => c.forced?.kind === 'chamber');
     expect(forced).toBeDefined();
     const after = generateNext({ ...s, cursors: [forced!] });
     expect(after.rooms).toHaveLength(1);
   });
 
-  it('a pending room is created when a chamber is rolled', () => {
-    const s = force('chamber');
+  it('a room is created when a chamber is rolled', () => {
+    const s = firstStepWith({ 'Periodic Check': 'chamber' });
     expect(s.rooms).toHaveLength(1);
     expect(s.rooms[0].exits.length).toBeGreaterThan(0);
-  });
-});
-
-describe('overrides', () => {
-  it('forcing a result changes the dungeon and is flagged in the log', () => {
-    const base = generateNext(started(11));
-    const key = '1|Periodic Check|1';
-    const forced = applyOverride(base, key, 'chamber');
-    const r = forced.rollHistory.find(x => x.key === key)!;
-    expect(r.overridden).toBe(true);
-    expect(r.outcomeKey).toBe('chamber');
-    expect(forced.rooms).toHaveLength(1);
-    expect(forced.stepCount).toBe(base.stepCount);
-  });
-
-  it('can be undone', () => {
-    const base = generateNext(started(11));
-    const key = '1|Periodic Check|1';
-    const undone = clearOverride(applyOverride(base, key, 'chamber'), key);
-    expect(undone).toEqual(base);
-  });
-
-  it('keeps room notes when the dungeon is regenerated', () => {
-    const forced = applyOverride(generateNext(started(11)), '1|Periodic Check|1', 'chamber');
-    const withNote = { ...forced, rooms: forced.rooms.map(r => ({ ...r, notes: 'dragon!' })) };
-    const again = regenerate(withNote);
-    expect(again.rooms[0].notes).toBe('dragon!');
   });
 });
 
 describe('minimum size', () => {
   it('a dungeon below its minimum sprouts a new passage instead of stopping', () => {
     const base = started(5, 'large');
-    const stopped = generateNext({
-      ...base,
-      overrides: { '1|Periodic Check|1': 'dead_end', '1|Dead End|1': 'dead_end' },
-    });
-    expect(stopped.rollHistory.some(r => r.table === 'Extra Passage')).toBe(true);
-    expect(stopped.cursors.length).toBeGreaterThan(0);
+    // Point the only cursor at a cell that is already floor, so it simply dies.
+    const dead = { ...base.cursors[0], position: { x: 0, y: 0 } };
+    const next = generateNext({ ...base, cursors: [dead] });
+    expect(next.rollHistory.some(r => r.table === 'Extra Passage')).toBe(true);
+    expect(next.cursors.length).toBeGreaterThan(0);
+  });
+});
+
+describe('room weighting', () => {
+  it('rooms make up around half of the floor area, not a thin scatter among corridors', () => {
+    let room = 0, passage = 0;
+    for (const seed of SEEDS) {
+      const s = full(seed, 'medium');
+      room += s.rooms.reduce((n, r) => n + roomCells(r).length, 0);
+      passage += s.corridors.reduce((n, c) => n + rectCells(c.rect).length, 0);
+    }
+    expect(room / (room + passage)).toBeGreaterThan(0.45);
   });
 });
 
@@ -334,109 +305,5 @@ describe('buildRoomDescription', () => {
       if (room.monster) expect(desc).toContain(room.monster);
       if (room.treasure) expect(desc).toContain(room.treasure);
     }
-  });
-});
-
-// ── Regressions from PR review ─────────────────────────────────────────────
-
-describe('zone inhabitant overrides', () => {
-  it('a forced inhabitant that is not level-eligible can still appear', () => {
-    let trolls = 0;
-    for (const seed of SEEDS.slice(0, 10)) {
-      const base = generateAll(generateStart(createInitialState({ size: 'medium', level: 1 }, seed)));
-      const overrides = { ...base.overrides };
-      for (const r of base.rollHistory) if (r.table === 'Zone Inhabitants') overrides[r.key] = 'Troll';
-      const forced = regenerate({ ...base, overrides });
-      trolls += forced.rollHistory.filter(r => r.table === 'Monster' && r.outcomeKey === 'Troll').length;
-    }
-    // Trolls are not in the level-1 table; forcing them must give them a chance.
-    expect(trolls).toBeGreaterThan(0);
-  });
-});
-
-describe('undo after an override that ends the dungeon early', () => {
-  it('restores the full dungeon, not just the shortened prefix', () => {
-    let found = false;
-    for (const seed of SEEDS) {
-      const original = full(seed, 'small');
-      for (let step = 2; step < original.stepCount && !found; step++) {
-        const key = `${step}|Periodic Check|1`;
-        if (!original.rollHistory.some(r => r.key === key)) continue;
-        const cut = applyOverride(original, key, 'dead_end');
-        if (cut.stepCount >= original.stepCount) continue;
-        found = true;
-        expect(cut.targetSteps).toBe(original.targetSteps);
-        expect(clearOverride(cut, key)).toEqual(original);
-      }
-      if (found) break;
-    }
-    expect(found, 'no seed produced an early-ending override to test').toBe(true);
-  });
-});
-
-describe('room identity and notes across replay', () => {
-  const annotate = (s: DungeonState): DungeonState => ({
-    ...s, rooms: s.rooms.map(r => ({ ...r, notes: `note for ${r.id}` })),
-  });
-
-  it('room ids come from lineage, not allocation order', () => {
-    const s = full(77, 'large');
-    expect(s.rooms.length).toBeGreaterThan(0);
-    for (const r of s.rooms) expect(r.id.startsWith('room@e.')).toBe(true);
-    expect(new Set(s.rooms.map(r => r.id)).size).toBe(s.rooms.length);
-  });
-
-  it('never attaches a note to a different room, and keeps notes that lose their room', () => {
-    let changed = 0, orphaned = 0;
-    for (const seed of SEEDS.slice(0, 6)) {
-      const original = annotate(full(seed, 'large'));
-      for (const step of [1, 2, 3, 4]) {
-        const key = `${step}|Periodic Check|1`;
-        for (const value of ['dead_end', 'chamber', 'turn']) {
-          const result = applyOverride(original, key, value);
-          const oldById = new Map(original.rooms.map(r => [r.id, r]));
-          for (const r of result.rooms) {
-            if (!r.notes) continue;
-            const was = oldById.get(r.id)!;
-            expect(was, 'note appeared on a room that did not exist').toBeDefined();
-            expect(r.notes).toBe(was.notes);
-            expect(r.rect).toEqual(was.rect); // same footprint, so genuinely the same room
-          }
-          const kept = result.rooms.filter(r => r.notes).length;
-          // Every note is either still on its room or preserved as an orphan.
-          expect(kept + result.orphanedNotes.length).toBe(original.rooms.length);
-          if (result.rooms.some(r => !oldById.has(r.id) || !r.notes)) changed++;
-          orphaned += result.orphanedNotes.length;
-        }
-      }
-    }
-    expect(changed).toBeGreaterThan(0);
-    expect(orphaned).toBeGreaterThan(0);
-  });
-
-  it('orphaned notes return when the original layout is restored', () => {
-    const original = annotate(full(5, 'large'));
-    for (const step of [1, 2, 3, 4, 5, 6]) {
-      const key = `${step}|Periodic Check|1`;
-      const overridden = applyOverride(original, key, 'dead_end');
-      if (overridden.orphanedNotes.length === 0) continue;
-      const restored = clearOverride(overridden, key);
-      expect(restored.orphanedNotes).toEqual([]);
-      expect(restored.rooms.map(r => r.notes)).toEqual(original.rooms.map(r => r.notes));
-      return;
-    }
-    throw new Error('no override orphaned any notes');
-  });
-});
-
-describe('log-only events', () => {
-  it('never share a table name with an overridable roll', () => {
-    const rolled = new Set<string>();
-    const events = new Set<string>();
-    for (const seed of SEEDS.slice(0, 10)) {
-      for (const r of full(seed, 'large').rollHistory) (r.sides > 0 ? rolled : events).add(r.table);
-    }
-    expect(events.size).toBeGreaterThan(0);
-    for (const e of events) expect(rolled.has(e), `"${e}" is both a roll and an event`).toBe(false);
   });
 });

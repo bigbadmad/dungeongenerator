@@ -56,12 +56,12 @@ export function rollD(sides: number, rng: Rng): number {
 // Periodic check — made at the end of every stretch of passage (DMG: every 60 ft).
 // The generator adjusts these weights to steer towards the requested dungeon size.
 export const PERIODIC_CHECK: TableEntry<PeriodicCheckResult>[] = [
-  { weight: 22, value: 'continue',     label: 'Passage continues' },
-  { weight: 14, value: 'turn',         label: 'Passage turns' },
-  { weight: 10, value: 'door',         label: 'Door' },
-  { weight: 13, value: 'side_passage', label: 'Side passage' },
-  { weight: 28, value: 'chamber',      label: 'Chamber or Room' },
-  { weight: 3,  value: 'stairs',       label: 'Stairs' },
+  { weight: 12, value: 'continue',     label: 'Passage continues' },
+  { weight: 10, value: 'turn',         label: 'Passage turns' },
+  { weight: 12, value: 'door',         label: 'Door' },
+  { weight: 10, value: 'side_passage', label: 'Side passage' },
+  { weight: 44, value: 'chamber',      label: 'Chamber or Room' },
+  { weight: 2,  value: 'stairs',       label: 'Stairs' },
   { weight: 10, value: 'dead_end',     label: 'Dead end' },
 ];
 
@@ -86,9 +86,9 @@ export const SIDE_PASSAGE: TableEntry<SidePassageType>[] = [
 
 // Where a door sits relative to the passage.
 export const DOOR_LOCATION: TableEntry<DoorLocation>[] = [
-  { weight: 50, value: 'ahead', label: 'Ahead (in the passage)' },
-  { weight: 25, value: 'left',  label: 'Left (into a chamber)' },
-  { weight: 25, value: 'right', label: 'Right (into a chamber)' },
+  { weight: 30, value: 'ahead', label: 'Ahead (in the passage)' },
+  { weight: 35, value: 'left',  label: 'Left (into a chamber)' },
+  { weight: 35, value: 'right', label: 'Right (into a chamber)' },
 ];
 
 export const DEAD_END: TableEntry<DeadEndResult>[] = [
@@ -104,9 +104,9 @@ export const PASSAGE_COLLISION: TableEntry<CollisionResult>[] = [
 
 // Length of one stretch of passage, in 5 ft cells.
 export const PASSAGE_LENGTH: TableEntry<number>[] = [
-  { weight: 45, value: 6,  label: '30 ft' },
-  { weight: 45, value: 12, label: '60 ft' },
-  { weight: 10, value: 18, label: '90 ft' },
+  { weight: 55, value: 6,  label: '30 ft' },
+  { weight: 40, value: 12, label: '60 ft' },
+  { weight: 5,  value: 18, label: '90 ft' },
 ];
 
 // Passage width, in 5 ft cells. 0 = "special" (see SPECIAL_PASSAGE).
@@ -142,20 +142,20 @@ export const IRREGULAR_VARIANT: TableEntry<IrregularVariant>[] = [
 // Room dimensions in 5 ft cells. Squares and circles use the small table;
 // rectangles and irregular rooms use the large one.
 export const ROOM_SIZE_SMALL: TableEntry<number>[] = [
-  { weight: 25, value: 4,  label: '20 ft' },
+  { weight: 15, value: 4,  label: '20 ft' },
   { weight: 35, value: 6,  label: '30 ft' },
-  { weight: 25, value: 8,  label: '40 ft' },
-  { weight: 15, value: 10, label: '50 ft' },
+  { weight: 30, value: 8,  label: '40 ft' },
+  { weight: 20, value: 10, label: '50 ft' },
 ];
 
 export const ROOM_SIZE_LARGE: TableEntry<number>[] = [
-  { weight: 10, value: 4,  label: '20 ft' },
-  { weight: 25, value: 6,  label: '30 ft' },
-  { weight: 25, value: 8,  label: '40 ft' },
-  { weight: 20, value: 10, label: '50 ft' },
-  { weight: 12, value: 12, label: '60 ft' },
-  { weight: 6,  value: 16, label: '80 ft' },
-  { weight: 2,  value: 20, label: '100 ft' },
+  { weight: 5,  value: 4,  label: '20 ft' },
+  { weight: 20, value: 6,  label: '30 ft' },
+  { weight: 27, value: 8,  label: '40 ft' },
+  { weight: 25, value: 10, label: '50 ft' },
+  { weight: 15, value: 12, label: '60 ft' },
+  { weight: 7,  value: 16, label: '80 ft' },
+  { weight: 1,  value: 20, label: '100 ft' },
 ];
 
 // Room contents. Level-adjusted: higher level shifts monster weight up.
@@ -328,10 +328,10 @@ export const STAIR_TYPE: TableEntry<StairType>[] = [
 
 // Number of exits for a room (besides the one you came in by)
 export const ROOM_EXITS: TableEntry<number>[] = [
-  { weight: 20, value: 1, label: '1 exit' },
+  { weight: 35, value: 1, label: '1 exit' },
   { weight: 40, value: 2, label: '2 exits' },
-  { weight: 25, value: 3, label: '3 exits' },
-  { weight: 15, value: 4, label: '4 exits' },
+  { weight: 20, value: 3, label: '3 exits' },
+  { weight: 5,  value: 4, label: '4 exits' },
 ];
 
 // Width of a passage leaving a room, in cells. Rolled silently.

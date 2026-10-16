@@ -47,6 +47,12 @@ export function initMap(): void {
   _svg.addEventListener('touchend', onTouchEnd);
 
   window.addEventListener('resize', () => { if (_lastState && !_userMoved) autoFit(_lastState); });
+  // A tab brought back from the background can have been laid out at zero size; re-fit once it is visible.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && _lastState) {
+      if (_userMoved) applyTransform(); else autoFit(_lastState);
+    }
+  });
 }
 
 // ── Pan / zoom ──────────────────────────────────────────────────────────────
