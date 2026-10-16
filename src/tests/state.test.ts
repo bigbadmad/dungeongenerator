@@ -86,6 +86,67 @@ describe('autosave', () => {
     }
   });
 
+  it('discards a version-2 autosave that is missing required fields', async () => {
+    // Valid JSON, right version, "started" - but no cursors or roll history.
+    // Accepting this used to crash the first render, on every reload.
+    const incomplete = JSON.stringify({
+      version: 2, started: true, rooms: [], corridors: [],
+      settings: { level: 1, size: 'small', startDirection: 'north' },
+    });
+    const store = fakeStorage({ 'dungeon-generator.autosave': incomplete });
+    vi.stubGlobal('localStorage', store);
+    const mod = await freshModule();
+    expect(mod.getState().started).toBe(false);
+    expect(store.data.size).toBe(0);
+  });
+
+  it('discards an autosave with a damaged nested record', async () => {
+    const dungeon = JSON.parse(JSON.stringify(generateAll(generateStart(createInitialState({ size: 'small' }, 12)))));
+    delete dungeon.rooms[0].rect;
+    const store = fakeStorage({ 'dungeon-generator.autosave': JSON.stringify(dungeon) });
+    vi.stubGlobal('localStorage', store);
+    const mod = await freshModule();
+    expect(mod.getState().started).toBe(false);
+    expect(store.data.size).toBe(0);
+  });
+
+  it('starts fresh when reading the autosave throws', async () => {
+    vi.stubGlobal('localStorage', {
+      getItem: () => { throw new Error('SecurityError'); },
+      setItem: () => {},
+      removeItem: () => {},
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const mod = await freshModule();
+    expect(mod.getState().started).toBe(false);
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it('starts fresh when cleaning up a damaged autosave throws', async () => {
+    vi.stubGlobal('localStorage', {
+      getItem: () => '{not json',
+      setItem: () => {},
+      removeItem: () => { throw new Error('SecurityError'); },
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const mod = await freshModule();
+    expect(mod.getState().started).toBe(false);
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it('rejects a damaged file on load with a reason, leaving the current dungeon alone', async () => {
+    vi.stubGlobal('localStorage', fakeStorage());
+    const mod = await freshModule();
+    mod.setState(() => generateStart(createInitialState({}, 4)));
+    const before = mod.getState();
+    const damaged = JSON.parse(JSON.stringify(before));
+    delete damaged.cursors;
+    const result = mod.loadFromJSON(JSON.stringify(damaged));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain('damaged');
+    expect(mod.getState()).toBe(before);
+  });
+
   it('keeps working when storage is full', async () => {
     vi.stubGlobal('localStorage', {
       getItem: () => null,
