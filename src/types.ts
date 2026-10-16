@@ -1,6 +1,7 @@
 export type Direction = 'north' | 'east' | 'south' | 'west';
 export type DungeonSize = 'small' | 'medium' | 'large';
 export type RoomShape = 'square' | 'rectangle' | 'circle' | 'irregular';
+export type IrregularVariant = 'l_shape' | 'cross' | 'notched' | 'cavern';
 export type RoomContentsType =
   | 'empty'
   | 'monster'
@@ -26,6 +27,7 @@ export type PeriodicCheckResult =
   | 'door'
   | 'side_passage'
   | 'chamber'
+  | 'stairs'
   | 'dead_end';
 
 export type TurnType =
@@ -37,12 +39,10 @@ export type TurnType =
   | 't_intersection'
   | 'x_intersection';
 
-export type SidePassageType =
-  | 'left'
-  | 'right'
-  | 'both'
-  | 'ahead_left_right'
-  | 'passage_t';
+export type SidePassageType = 'left' | 'right' | 'both' | 'passage_t';
+export type DoorLocation = 'ahead' | 'left' | 'right';
+export type DeadEndResult = 'dead_end' | 'secret_door';
+export type CollisionResult = 'join' | 'wall';
 
 export type StairType =
   | 'down_one'
@@ -81,6 +81,7 @@ export type DressingType =
   | 'smell'
   | 'sound';
 
+// One grid cell is 5 ft.
 export interface GridPos {
   x: number;
   y: number;
@@ -96,22 +97,37 @@ export interface GridRect {
 export interface Room {
   id: string;
   shape: RoomShape;
+  variant?: IrregularVariant;
+  /** Bounding rectangle. Cells inside `cutouts` are solid rock, not floor. */
   rect: GridRect;
+  cutouts: GridRect[];
+  zone: number;
   contents: RoomContentsType;
   trap?: TrapType;
   dressing?: { type: DressingType; flavour: string };
+  monster?: string;
+  treasure?: string;
+  special?: string;
   exits: Exit[];
   notes: string;
-  isEntrance: boolean;
 }
+
+export type CorridorKind = 'passage' | 'junction' | 'stairs';
 
 export interface Corridor {
   id: string;
+  kind: CorridorKind;
   rect: GridRect;
   direction: Direction;
+  /** Cross-section in cells. */
+  width: number;
   fromId: string;
-  toId: string | null;
+  /** Ids of existing areas this passage runs into and opens onto (loops). */
+  joins: string[];
+  zone: number;
+  /** Door on the entry face of this passage. */
   doorType?: DoorType;
+  stairs?: StairType;
 }
 
 export interface Exit {
@@ -121,23 +137,41 @@ export interface Exit {
   exitPoint: GridPos;
 }
 
+export type ForcedAction =
+  /** Turn the passage to `dir` without rolling (used to finish a jog). */
+  | { kind: 'bend'; dir: Direction }
+  /** The passage opens straight into a chamber (a side door). */
+  | { kind: 'chamber' };
+
 export interface GenerationCursor {
   type: 'corridor_end';
   corridorId: string;
+  /** First free cell beyond the end of the passage, on its centre line. */
   position: GridPos;
   direction: Direction;
+  /** Width of the passage that arrived here, in cells. */
+  width: number;
+  zone: number;
+  forced?: ForcedAction;
 }
 
 export interface RollRecord {
   id: string;
+  /** Stable key (`step|table|n`) used to attach overrides across regeneration. */
+  key: string;
   table: string;
+  /** Extra context, e.g. "left branch". */
+  note?: string;
+  /** The die as actually rolled (1..sides). */
   diceResult: number;
+  sides: number;
+  /** The outcome that was applied (the override if there is one). */
   outcome: string;
   outcomeKey: string;
   overridden: boolean;
-  overrideValue?: string;
+  /** Label of the natural, un-overridden result. */
+  naturalOutcome?: string;
   step: number;
-  targetId?: string;
 }
 
 export interface DungeonSettings {
@@ -147,7 +181,12 @@ export interface DungeonSettings {
 }
 
 export interface DungeonState {
+  version: 2;
   settings: DungeonSettings;
+  seed: number;
+  rngState: number;
+  nextId: number;
+  nextZone: number;
   started: boolean;
   rooms: Room[];
   corridors: Corridor[];
@@ -155,5 +194,8 @@ export interface DungeonState {
   rollHistory: RollRecord[];
   stepCount: number;
   selectedRoomId: string | null;
-  occupied: string[];
+  /** roll key -> outcome value chosen by the user. */
+  overrides: Record<string, string>;
+  /** zone id -> dominant monster name. */
+  zones: Record<string, string>;
 }

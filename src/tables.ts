@@ -1,3 +1,4 @@
+import { Rng } from './rng.js';
 import type {
   PeriodicCheckResult,
   TurnType,
@@ -8,6 +9,10 @@ import type {
   TrapType,
   DressingType,
   StairType,
+  DoorLocation,
+  DeadEndResult,
+  CollisionResult,
+  IrregularVariant,
 } from './types.js';
 
 export interface TableEntry<T> {
@@ -16,31 +21,51 @@ export interface TableEntry<T> {
   label: string;
 }
 
-export function weightedRoll<E extends TableEntry<unknown>>(table: E[]): E {
-  const total = table.reduce((sum, e) => sum + e.weight, 0);
-  let roll = Math.floor(Math.random() * total);
+/** Sum of weights = the number of sides of the die used to roll this table. */
+export function tableSides(table: readonly TableEntry<unknown>[]): number {
+  return table.reduce((sum, e) => sum + e.weight, 0);
+}
+
+/** Maps a die result (1..sides) onto the table band that contains it. */
+export function entryForDie<E extends TableEntry<unknown>>(table: readonly E[], die: number): E {
+  let remaining = die;
   for (const entry of table) {
-    roll -= entry.weight;
-    if (roll < 0) return entry;
+    remaining -= entry.weight;
+    if (remaining <= 0 && entry.weight > 0) return entry;
   }
   return table[table.length - 1];
 }
 
-export function rollD(sides: number): number {
-  return Math.floor(Math.random() * sides) + 1;
+export interface TableRoll<E> {
+  entry: E;
+  die: number;
+  sides: number;
 }
 
-// Periodic check — every 60ft of passage. Weights approximate 1e DMG table.
+/** Rolls a die of the right size and reads the result off the table. */
+export function rollTable<E extends TableEntry<unknown>>(table: readonly E[], rng: Rng): TableRoll<E> {
+  const sides = tableSides(table);
+  const die = rng.int(1, sides);
+  return { entry: entryForDie(table, die), die, sides };
+}
+
+export function rollD(sides: number, rng: Rng): number {
+  return rng.int(1, sides);
+}
+
+// Periodic check — made at the end of every stretch of passage (DMG: every 60 ft).
+// The generator adjusts these weights to steer towards the requested dungeon size.
 export const PERIODIC_CHECK: TableEntry<PeriodicCheckResult>[] = [
-  { weight: 30, value: 'continue',     label: 'Passage continues' },
-  { weight: 15, value: 'turn',         label: 'Passage turns' },
+  { weight: 22, value: 'continue',     label: 'Passage continues' },
+  { weight: 14, value: 'turn',         label: 'Passage turns' },
   { weight: 10, value: 'door',         label: 'Door' },
-  { weight: 15, value: 'side_passage', label: 'Side passage' },
-  { weight: 20, value: 'chamber',      label: 'Chamber or Room' },
+  { weight: 13, value: 'side_passage', label: 'Side passage' },
+  { weight: 28, value: 'chamber',      label: 'Chamber or Room' },
+  { weight: 3,  value: 'stairs',       label: 'Stairs' },
   { weight: 10, value: 'dead_end',     label: 'Dead end' },
 ];
 
-// Turn type table
+// Turn type table. 45° bends are drawn as a short jog on the square grid.
 export const TURN_TYPE: TableEntry<TurnType>[] = [
   { weight: 15, value: 'left_90',       label: 'Left 90°' },
   { weight: 15, value: 'right_90',      label: 'Right 90°' },
@@ -51,22 +76,52 @@ export const TURN_TYPE: TableEntry<TurnType>[] = [
   { weight: 10, value: 'x_intersection',label: 'X intersection' },
 ];
 
-// Side passage table
+// Side passage table. The main passage carries on except for "Passage T's".
 export const SIDE_PASSAGE: TableEntry<SidePassageType>[] = [
-  { weight: 30, value: 'left',           label: 'Left' },
-  { weight: 30, value: 'right',          label: 'Right' },
-  { weight: 15, value: 'both',           label: 'Both sides' },
-  { weight: 15, value: 'ahead_left_right', label: 'Ahead, left and right' },
-  { weight: 10, value: 'passage_t',      label: "Passage T's" },
+  { weight: 35, value: 'left',      label: 'Left' },
+  { weight: 35, value: 'right',     label: 'Right' },
+  { weight: 20, value: 'both',      label: 'Both sides' },
+  { weight: 10, value: 'passage_t', label: "Passage T's" },
 ];
 
-// Passage width (units = 5ft)
+// Where a door sits relative to the passage.
+export const DOOR_LOCATION: TableEntry<DoorLocation>[] = [
+  { weight: 50, value: 'ahead', label: 'Ahead (in the passage)' },
+  { weight: 25, value: 'left',  label: 'Left (into a chamber)' },
+  { weight: 25, value: 'right', label: 'Right (into a chamber)' },
+];
+
+export const DEAD_END: TableEntry<DeadEndResult>[] = [
+  { weight: 75, value: 'dead_end',    label: 'Passage ends' },
+  { weight: 25, value: 'secret_door', label: 'Secret door (passage continues)' },
+];
+
+// What happens when a passage runs into an existing area.
+export const PASSAGE_COLLISION: TableEntry<CollisionResult>[] = [
+  { weight: 40, value: 'join', label: 'Opens onto the existing area' },
+  { weight: 60, value: 'wall', label: 'Stops short at a wall' },
+];
+
+// Length of one stretch of passage, in 5 ft cells.
+export const PASSAGE_LENGTH: TableEntry<number>[] = [
+  { weight: 45, value: 6,  label: '30 ft' },
+  { weight: 45, value: 12, label: '60 ft' },
+  { weight: 10, value: 18, label: '90 ft' },
+];
+
+// Passage width, in 5 ft cells. 0 = "special" (see SPECIAL_PASSAGE).
 export const PASSAGE_WIDTH: TableEntry<number>[] = [
-  { weight: 40, value: 1, label: '5 ft' },
-  { weight: 35, value: 2, label: '10 ft' },
-  { weight: 15, value: 4, label: '20 ft' },
-  { weight: 7,  value: 6, label: '30 ft' },
-  { weight: 3,  value: 0, label: 'Special' },
+  { weight: 20, value: 1, label: '5 ft' },
+  { weight: 62, value: 2, label: '10 ft' },
+  { weight: 13, value: 4, label: '20 ft' },
+  { weight: 3,  value: 6, label: '30 ft' },
+  { weight: 2,  value: 0, label: 'Special' },
+];
+
+export const SPECIAL_PASSAGE: TableEntry<number>[] = [
+  { weight: 5, value: 8,  label: '40 ft gallery' },
+  { weight: 3, value: 3,  label: '15 ft passage' },
+  { weight: 2, value: 12, label: '60 ft great hall' },
 ];
 
 // Room shape
@@ -77,20 +132,30 @@ export const ROOM_SHAPE: TableEntry<RoomShape>[] = [
   { weight: 10, value: 'irregular', label: 'Irregular' },
 ];
 
-// Room size in grid squares (one unit = 10ft), single dimension for square/circle
+export const IRREGULAR_VARIANT: TableEntry<IrregularVariant>[] = [
+  { weight: 30, value: 'l_shape', label: 'L-shaped' },
+  { weight: 20, value: 'cross',   label: 'Cross-shaped' },
+  { weight: 25, value: 'notched', label: 'Notched' },
+  { weight: 25, value: 'cavern',  label: 'Rough cavern' },
+];
+
+// Room dimensions in 5 ft cells. Squares and circles use the small table;
+// rectangles and irregular rooms use the large one.
 export const ROOM_SIZE_SMALL: TableEntry<number>[] = [
-  { weight: 25, value: 2, label: '20 ft' },
-  { weight: 35, value: 3, label: '30 ft' },
-  { weight: 25, value: 4, label: '40 ft' },
-  { weight: 15, value: 5, label: '50 ft' },
+  { weight: 25, value: 4,  label: '20 ft' },
+  { weight: 35, value: 6,  label: '30 ft' },
+  { weight: 25, value: 8,  label: '40 ft' },
+  { weight: 15, value: 10, label: '50 ft' },
 ];
 
 export const ROOM_SIZE_LARGE: TableEntry<number>[] = [
-  { weight: 20, value: 4, label: '40 ft' },
-  { weight: 30, value: 5, label: '50 ft' },
-  { weight: 25, value: 6, label: '60 ft' },
-  { weight: 15, value: 8, label: '80 ft' },
-  { weight: 10, value: 10, label: '100 ft' },
+  { weight: 10, value: 4,  label: '20 ft' },
+  { weight: 25, value: 6,  label: '30 ft' },
+  { weight: 25, value: 8,  label: '40 ft' },
+  { weight: 20, value: 10, label: '50 ft' },
+  { weight: 12, value: 12, label: '60 ft' },
+  { weight: 6,  value: 16, label: '80 ft' },
+  { weight: 2,  value: 20, label: '100 ft' },
 ];
 
 // Room contents. Level-adjusted: higher level shifts monster weight up.
@@ -124,6 +189,13 @@ export const DOOR_TYPE: TableEntry<DoorType>[] = [
   { weight: 10, value: 'iron',          label: 'Iron' },
   { weight: 10, value: 'portcullis',    label: 'Portcullis' },
   { weight: 5,  value: 'archway',       label: 'Archway (no door)' },
+];
+
+// Door on a room exit: half the time there simply isn't one.
+export type ExitDoorResult = DoorType | 'none';
+export const EXIT_DOOR: TableEntry<ExitDoorResult>[] = [
+  { weight: 50, value: 'none', label: 'Open (no door)' },
+  ...DOOR_TYPE.map(e => ({ ...e, weight: Math.max(1, Math.round(e.weight / 2)) })),
 ];
 
 // Trap types — used for both passage and room traps
@@ -254,10 +326,17 @@ export const STAIR_TYPE: TableEntry<StairType>[] = [
   { weight: 10, value: 'shaft',          label: 'Shaft (up or down)' },
 ];
 
-// Number of exits for a room (varies by room size hint)
+// Number of exits for a room (besides the one you came in by)
 export const ROOM_EXITS: TableEntry<number>[] = [
   { weight: 20, value: 1, label: '1 exit' },
   { weight: 40, value: 2, label: '2 exits' },
   { weight: 25, value: 3, label: '3 exits' },
   { weight: 15, value: 4, label: '4 exits' },
+];
+
+// Width of a passage leaving a room, in cells. Rolled silently.
+export const EXIT_WIDTH: TableEntry<number>[] = [
+  { weight: 30, value: 1, label: '5 ft' },
+  { weight: 55, value: 2, label: '10 ft' },
+  { weight: 15, value: 4, label: '20 ft' },
 ];

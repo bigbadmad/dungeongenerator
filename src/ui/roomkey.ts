@@ -1,6 +1,6 @@
 import type { DungeonState } from '../types.js';
 import { setState } from '../state.js';
-import { buildRoomDescription } from '../generator.js';
+import { describeRoomLines } from '../generator.js';
 
 export function renderRoomKey(state: DungeonState): void {
   const list = document.getElementById('room-key-list') as HTMLDivElement;
@@ -20,8 +20,8 @@ export function renderRoomKey(state: DungeonState): void {
     entry.dataset.roomId = room.id;
 
     entry.addEventListener('click', (e) => {
-      if ((e.target as HTMLElement).tagName === 'TEXTAREA' ||
-          (e.target as HTMLElement).tagName === 'BUTTON') return;
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === 'TEXTAREA' || tag === 'BUTTON') return;
       setState(s => ({ ...s, selectedRoomId: s.selectedRoomId === room.id ? null : room.id }));
     });
 
@@ -30,12 +30,13 @@ export function renderRoomKey(state: DungeonState): void {
     headerEl.textContent = `Room ${index + 1}`;
     entry.appendChild(headerEl);
 
-    const bodyEl = document.createElement('div');
-    bodyEl.className = 'room-key-entry-body';
-    bodyEl.textContent = buildRoomDescription(room);
-    entry.appendChild(bodyEl);
+    for (const line of describeRoomLines(room)) {
+      const bodyEl = document.createElement('div');
+      bodyEl.className = 'room-key-entry-body';
+      bodyEl.textContent = line;
+      entry.appendChild(bodyEl);
+    }
 
-    // Notes
     if (room.notes) {
       const notesEl = document.createElement('div');
       notesEl.className = 'room-key-entry-notes';
@@ -43,7 +44,6 @@ export function renderRoomKey(state: DungeonState): void {
       entry.appendChild(notesEl);
     }
 
-    // Edit notes
     const editBtn = document.createElement('button');
     editBtn.className = 'small secondary';
     editBtn.style.marginTop = '4px';
