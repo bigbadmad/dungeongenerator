@@ -62,6 +62,29 @@ describe('validateState rejects damaged state', () => {
     ['roll with non-numeric die', s => { s.rollHistory[0].diceResult = 'six'; }],
     ['roll with no table', s => { delete s.rollHistory[0].table; }],
     ['null entry in rollHistory', s => { s.rollHistory[1] = null; }],
+    // Hostile / corrupted numbers that are finite but still unsafe to render.
+    ['stairs corridor at 2^53 (x++ stops advancing)', s => { Object.assign(s.corridors[0], { kind: 'stairs', direction: 'east' }); s.corridors[0].rect.x = 2 ** 53; }],
+    ['coordinate beyond the supported range', s => { s.rooms[0].rect.x = 1_000_000; }],
+    ['fractional coordinate', s => { s.rooms[0].rect.y = 1.5; }],
+    ['enormous room', s => { s.rooms[0].rect.w = 1e9; }],
+    ['enormous passage', s => { s.corridors[0].rect.h = 5000; }],
+    ['negative cutout size', s => { s.rooms[0].cutouts = [{ x: 0, y: 0, w: -4, h: 2 }]; }],
+    ['fractional passage width', s => { s.corridors[0].width = 2.5; }],
+    ['cursor width of zero', s => { s.cursors[0].width = 0; }],
+    ['cursor position out of range', s => { s.cursors[0].position.x = 2 ** 53; }],
+    ['many huge passages (total area)', s => { for (let i = 0; i < 20; i++) s.corridors.push({ ...s.corridors[0], id: `big${i}`, rect: { x: 0, y: 0, w: 100, h: 100 } }); }],
+    ['far too many rooms', s => { s.rooms = Array.from({ length: 1001 }, () => s.rooms[0]); }],
+    ['far too many roll records', s => { s.rollHistory = Array.from({ length: 20_001 }, () => s.rollHistory[0]); }],
+    // Exits.
+    ['exit corridorId is an object', s => { s.rooms[0].exits[0].corridorId = { toString: null }; }],
+    ['exit corridorId is a number', s => { s.rooms[0].exits[0].corridorId = 7; }],
+    ['exit door type is not text', s => { s.rooms[0].exits[0].doorType = 5; }],
+    // Settings.
+    ['level 0', s => { s.settings.level = 0; }],
+    ['level 11', s => { s.settings.level = 11; }],
+    ['fractional level', s => { s.settings.level = 2.5; }],
+    ['level is NaN', s => { s.settings.level = Number.NaN; }],
+    ['level is text', s => { s.settings.level = '3'; }],
   ];
 
   for (const [name, brk] of breakers) {
@@ -77,6 +100,20 @@ describe('validateState rejects damaged state', () => {
       expect(validateState(s)).not.toBeNull();
     });
   }
+
+  it('accepts an exit with no corridor (null)', () => {
+    const s = clone();
+    s.rooms[0].exits[0].corridorId = null;
+    expect(validateState(s)).toBeNull();
+  });
+
+  it('accepts the whole supported level range', () => {
+    for (let level = 1; level <= 10; level++) {
+      const s = clone();
+      s.settings.level = level;
+      expect(validateState(s), `level ${level}`).toBeNull();
+    }
+  });
 
   it('rejects things that are not objects', () => {
     for (const v of [null, undefined, 3, 'dungeon', [], true]) expect(validateState(v)).not.toBeNull();

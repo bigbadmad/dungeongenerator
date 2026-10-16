@@ -110,6 +110,33 @@ describe('autosave', () => {
     expect(store.data.size).toBe(0);
   });
 
+  it('discards an autosave whose coordinates would freeze the renderer', async () => {
+    const dungeon = JSON.parse(JSON.stringify(generateAll(generateStart(createInitialState({ size: 'small' }, 12)))));
+    Object.assign(dungeon.corridors[0], { kind: 'stairs', direction: 'east' });
+    dungeon.corridors[0].rect.x = 2 ** 53;
+    const store = fakeStorage({ 'dungeon-generator.autosave': JSON.stringify(dungeon) });
+    vi.stubGlobal('localStorage', store);
+    const mod = await freshModule();
+    expect(mod.getState().started).toBe(false);
+    expect(store.data.size).toBe(0);
+  });
+
+  it('discards a half-built autosave with an unsupported level', async () => {
+    const dungeon = JSON.parse(JSON.stringify(generateStart(createInitialState({ size: 'small' }, 12))));
+    dungeon.settings.level = 0;
+    const store = fakeStorage({ 'dungeon-generator.autosave': JSON.stringify(dungeon) });
+    vi.stubGlobal('localStorage', store);
+    expect((await freshModule()).getState().started).toBe(false);
+  });
+
+  it('discards an autosave whose exit has a malformed corridorId', async () => {
+    const dungeon = JSON.parse(JSON.stringify(generateAll(generateStart(createInitialState({ size: 'small' }, 12)))));
+    dungeon.rooms[0].exits[0].corridorId = { toString: null };
+    const store = fakeStorage({ 'dungeon-generator.autosave': JSON.stringify(dungeon) });
+    vi.stubGlobal('localStorage', store);
+    expect((await freshModule()).getState().started).toBe(false);
+  });
+
   it('starts fresh when reading the autosave throws', async () => {
     vi.stubGlobal('localStorage', {
       getItem: () => { throw new Error('SecurityError'); },
@@ -176,5 +203,54 @@ describe('autosave', () => {
     expect(mod.getState().seed).toBe(77);
     expect(store.data.has(mod.STORAGE_KEY)).toBe(true);
     expect(mod.loadFromJSON('nope').ok).toBe(false);
+  });
+});
+
+describe('saves from the build that had roll overrides', () => {
+  const legacy = (orphanedNotes: unknown, notesOnFirstRoom = '') => {
+    const d = JSON.parse(JSON.stringify(generateAll(generateStart(createInitialState({ size: 'small' }, 21)))));
+    d.overrides = { '1|Periodic Check|1': 'chamber' };
+    d.targetSteps = d.stepCount;
+    d.orphanedNotes = orphanedNotes;
+    d.rooms[0].notes = notesOnFirstRoom;
+    return JSON.stringify(d);
+  };
+
+  it('keeps notes that used to be parked as orphans, as a normal note on Room 1', async () => {
+    vi.stubGlobal('localStorage', fakeStorage());
+    const mod = await freshModule();
+    const file = legacy([{ label: 'Square room, 40×40 ft', notes: 'the lich sleeps here', roomId: 'room@e.1', sig: 'x' }]);
+    expect(mod.loadFromJSON(file)).toEqual({ ok: true });
+    const first = mod.getState().rooms[0];
+    expect(first.notes).toContain('the lich sleeps here');
+    expect(first.notes).toContain('Square room, 40×40 ft');
+    expect('orphanedNotes' in mod.getState()).toBe(false);
+    expect('overrides' in mod.getState()).toBe(false);
+  });
+
+  it('appends to a note already on Room 1 instead of replacing it', async () => {
+    vi.stubGlobal('localStorage', fakeStorage());
+    const mod = await freshModule();
+    mod.loadFromJSON(legacy([{ label: 'Old room', notes: 'second note' }], 'first note'));
+    const notes = mod.getState().rooms[0].notes;
+    expect(notes.startsWith('first note\n')).toBe(true);
+    expect(notes).toContain('second note');
+  });
+
+  it('ignores empty or malformed parked notes without failing the load', async () => {
+    vi.stubGlobal('localStorage', fakeStorage());
+    const mod = await freshModule();
+    const file = legacy([{ notes: '   ' }, null, 4, { label: 'x' }, { notes: 9 }], 'mine');
+    expect(mod.loadFromJSON(file)).toEqual({ ok: true });
+    expect(mod.getState().rooms[0].notes).toBe('mine');
+  });
+
+  it('does not lose the notes when there is no room to put them in', async () => {
+    vi.stubGlobal('localStorage', fakeStorage());
+    const mod = await freshModule();
+    const d = JSON.parse(legacy([{ label: 'Gone', notes: 'important' }]));
+    d.rooms = [];
+    expect(mod.loadFromJSON(JSON.stringify(d))).toEqual({ ok: true });
+    expect(JSON.stringify(mod.getState())).toContain('important');
   });
 });

@@ -15,6 +15,36 @@ function storage(): Storage | null {
   }
 }
 
+/**
+ * Saves from the build that had roll overrides may hold user-written text in
+ * `orphanedNotes` (notes parked when an override removed their room). Nothing
+ * displays that list any more, so fold the text into an ordinary note on the
+ * first room, where it stays visible and editable, and drop the dead fields.
+ * If there is no room to put it in, leave the data alone rather than lose it.
+ */
+function migrateLegacyNotes(p: Record<string, unknown>): void {
+  const legacy = p.orphanedNotes;
+  if (legacy === undefined) return;
+  const rooms = p.rooms;
+  const first: unknown = Array.isArray(rooms) ? rooms[0] : undefined;
+  const recovered = (Array.isArray(legacy) ? legacy : []).flatMap((o: unknown) => {
+    if (typeof o !== 'object' || o === null) return [];
+    const { label, notes } = o as { label?: unknown; notes?: unknown };
+    if (typeof notes !== 'string' || notes.trim() === '') return [];
+    return [`[Recovered note${typeof label === 'string' && label ? ` from ${label}` : ''}] ${notes}`];
+  });
+
+  if (recovered.length > 0) {
+    if (typeof first !== 'object' || first === null) return;
+    const room = first as { notes?: unknown };
+    const existing = typeof room.notes === 'string' ? room.notes : '';
+    room.notes = [existing, ...recovered].filter(Boolean).join('\n');
+  }
+  delete p.orphanedNotes;
+  delete p.overrides;
+  delete p.targetSteps;
+}
+
 function parseState(json: string): { ok: true; state: DungeonState } | { ok: false; reason: string } {
   let parsed: unknown;
   try {
@@ -29,6 +59,7 @@ function parseState(json: string): { ok: true; state: DungeonState } | { ok: fal
   if (p.version !== 2) {
     return { ok: false, reason: 'This file was saved by an older version and can no longer be opened.' };
   }
+  migrateLegacyNotes(parsed as Record<string, unknown>);
   const problem = validateState(parsed);
   if (problem) return { ok: false, reason: `This dungeon file is damaged (${problem}).` };
   return { ok: true, state: parsed as DungeonState };
