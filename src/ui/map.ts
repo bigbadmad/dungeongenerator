@@ -1,9 +1,22 @@
-import type { DungeonState, Room, Corridor, GridRect, Direction, DoorType, GridPos } from '../types.js';
+import type { DungeonState, Room, Corridor, Direction, DoorType, GridRect } from '../types.js';
 import { setState } from '../state.js';
+import { exportCanvasWidth } from '../exportLayout.js';
+import {
+  buildOwners,
+  buildLinks,
+  isLinked,
+  roomCells,
+  advance,
+  opposite,
+  isVertical,
+  posKey,
+} from '../geometry.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
-const CELL = 20; // px per grid unit (1 grid unit = 10ft)
-const PADDING = 4; // grid units of padding around content
+const CELL = 12; // px per grid cell (one cell = 5 ft)
+const PADDING = 3; // cells of margin around the dungeon when fitting
+const INK = '#1a1a1a';
+const FLOOR = '#fffdf7';
 
 let _svg: SVGSVGElement;
 let _mapGroup: SVGGElement;
@@ -15,6 +28,9 @@ let _zoom = 1;
 let _dragging = false;
 let _dragStart = { x: 0, y: 0 };
 let _viewStart = { x: 0, y: 0 };
+let _userMoved = false;
+let _lastSeed: number | null = null;
+let _lastState: DungeonState | null = null;
 
 export function initMap(): void {
   _svg = document.getElementById('dungeon-map') as unknown as SVGSVGElement;
@@ -26,22 +42,32 @@ export function initMap(): void {
   _svg.addEventListener('mouseleave', onMouseUp);
   _svg.addEventListener('wheel', onWheel, { passive: false });
 
-  // Touch support
   _svg.addEventListener('touchstart', onTouchStart, { passive: true });
   _svg.addEventListener('touchmove', onTouchMove, { passive: false });
   _svg.addEventListener('touchend', onTouchEnd);
+
+  window.addEventListener('resize', () => { if (_lastState && !_userMoved) autoFit(_lastState); });
 }
+
+// ── Pan / zoom ──────────────────────────────────────────────────────────────
+
+let _moved = 0;
 
 function onMouseDown(e: MouseEvent): void {
   _dragging = true;
+  _moved = 0;
   _dragStart = { x: e.clientX, y: e.clientY };
   _viewStart = { x: _viewX, y: _viewY };
 }
 
 function onMouseMove(e: MouseEvent): void {
   if (!_dragging) return;
-  _viewX = _viewStart.x + (e.clientX - _dragStart.x);
-  _viewY = _viewStart.y + (e.clientY - _dragStart.y);
+  const dx = e.clientX - _dragStart.x;
+  const dy = e.clientY - _dragStart.y;
+  _moved = Math.max(_moved, Math.abs(dx) + Math.abs(dy));
+  if (_moved > 3) _userMoved = true;
+  _viewX = _viewStart.x + dx;
+  _viewY = _viewStart.y + dy;
   applyTransform();
 }
 
@@ -51,13 +77,16 @@ function onMouseUp(): void {
 
 function onWheel(e: WheelEvent): void {
   e.preventDefault();
-  const factor = e.deltaY < 0 ? 1.1 : 0.9;
+  const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+  const next = Math.min(Math.max(_zoom * factor, 0.1), 8);
+  const applied = next / _zoom;
   const rect = _svg.getBoundingClientRect();
   const cx = e.clientX - rect.left;
   const cy = e.clientY - rect.top;
-  _viewX = cx - (cx - _viewX) * factor;
-  _viewY = cy - (cy - _viewY) * factor;
-  _zoom *= factor;
+  _viewX = cx - (cx - _viewX) * applied;
+  _viewY = cy - (cy - _viewY) * applied;
+  _zoom = next;
+  _userMoved = true;
   applyTransform();
 }
 
@@ -73,6 +102,7 @@ function onTouchStart(e: TouchEvent): void {
 function onTouchMove(e: TouchEvent): void {
   if (!_dragging || e.touches.length !== 1) return;
   e.preventDefault();
+  _userMoved = true;
   _viewX = _viewStart.x + (e.touches[0].clientX - _touchLast.x);
   _viewY = _viewStart.y + (e.touches[0].clientY - _touchLast.y);
   applyTransform();
@@ -86,344 +116,307 @@ function applyTransform(): void {
   _mapGroup.setAttribute('transform', `translate(${_viewX},${_viewY}) scale(${_zoom})`);
 }
 
-function gridToSvg(gridX: number, gridY: number): { x: number; y: number } {
-  return { x: gridX * CELL, y: gridY * CELL };
+/** Re-centres the whole dungeon in view. */
+export function fitView(): void {
+  _userMoved = false;
+  if (_lastState) autoFit(_lastState);
 }
 
-function svgRect(rect: GridRect): { x: number; y: number; w: number; h: number } {
-  return {
-    x: rect.x * CELL,
-    y: rect.y * CELL,
-    w: rect.w * CELL,
-    h: rect.h * CELL,
-  };
+// ── SVG helpers ─────────────────────────────────────────────────────────────
+
+function el<T extends SVGElement>(tag: string, attrs: Record<string, string | number> = {}): T {
+  const e = document.createElementNS(SVG_NS, tag) as T;
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, String(v));
+  return e;
 }
 
-function el<T extends SVGElement>(tag: string): T {
-  return document.createElementNS(SVG_NS, tag) as T;
+function zoneTint(zone: number): string {
+  return `hsl(${(zone * 53) % 360} 38% 93%)`;
 }
 
-function setAttrs(elem: Element, attrs: Record<string, string | number>): void {
-  for (const [k, v] of Object.entries(attrs)) {
-    elem.setAttribute(k, String(v));
+const CONTENT_GLYPH: Record<string, string> = {
+  empty: '', monster: 'M', monster_treasure: 'M$', trap: 'T', trap_treasure: 'T$', special: '*', treasure: '$',
+};
+
+// ── Rendering ───────────────────────────────────────────────────────────────
+//
+// Everything is drawn from the cell grid: floors are unions of unit squares,
+// and a wall is drawn on every cell edge that faces rock or faces an area it
+// is not open to. That is why rooms and passages join up without seams.
+
+export function renderMap(state: DungeonState): void {
+  _lastState = state;
+  while (_mapGroup.firstChild) _mapGroup.removeChild(_mapGroup.firstChild);
+
+  if (state.seed !== _lastSeed || !state.started) {
+    _userMoved = false;
+    _lastSeed = state.seed;
+  }
+  if (!state.started) return;
+
+  const owners = buildOwners(state.rooms, state.corridors);
+  const links = buildLinks(state.rooms, state.corridors);
+
+  const defs = el<SVGDefsElement>('defs');
+  const pattern = el<SVGPatternElement>('pattern', {
+    id: 'floor-grid', width: CELL, height: CELL, patternUnits: 'userSpaceOnUse',
+  });
+  pattern.appendChild(el('path', { d: `M ${CELL} 0 V ${CELL} H 0`, fill: 'none', stroke: '#d9dfe8', 'stroke-width': 0.5 }));
+  defs.appendChild(pattern);
+  _mapGroup.appendChild(defs);
+
+  renderFloors(state);
+  renderStairs(state.corridors);
+  renderWalls(state, owners, links);
+  for (const c of state.corridors) if (c.doorType) renderDoor(c, c.doorType);
+  renderEntrance(state);
+  renderRoomLabels(state);
+  for (const cursor of state.cursors) {
+    const p = cursor.position;
+    const s = CELL * 0.35;
+    const x = p.x * CELL + CELL / 2;
+    const y = p.y * CELL + CELL / 2;
+    _mapGroup.appendChild(el('polygon', {
+      points: `${x},${y - s} ${x + s},${y} ${x},${y + s} ${x - s},${y}`,
+      fill: '#d97706', opacity: 0.85, 'pointer-events': 'none',
+    }));
+  }
+
+  if (!_userMoved) autoFit(state);
+  else applyTransform();
+}
+
+function cellPath(cells: { x: number; y: number }[]): string {
+  let d = '';
+  for (const c of cells) d += `M${c.x * CELL} ${c.y * CELL}h${CELL}v${CELL}h${-CELL}z`;
+  return d;
+}
+
+function rectPath(r: GridRect): string {
+  return `M${r.x * CELL} ${r.y * CELL}h${r.w * CELL}v${r.h * CELL}h${-r.w * CELL}z`;
+}
+
+function renderFloors(state: DungeonState): void {
+  // Passages and junctions share one path.
+  let d = '';
+  for (const c of state.corridors) d += rectPath(c.rect);
+  _mapGroup.appendChild(el('path', { d, fill: FLOOR, stroke: FLOOR, 'stroke-width': 0.6, 'pointer-events': 'none' }));
+
+  for (const room of state.rooms) {
+    const selected = state.selectedRoomId === room.id;
+    const fill = selected ? '#f3e2a9' : zoneTint(room.zone);
+    const path = el<SVGPathElement>('path', {
+      d: cellPath(roomCells(room)), fill, stroke: fill, 'stroke-width': 0.6,
+      'data-room-id': room.id, style: 'cursor:pointer',
+    });
+    path.addEventListener('click', () => {
+      if (_moved > 3) return; // that was a drag, not a click
+      setState(s => ({ ...s, selectedRoomId: s.selectedRoomId === room.id ? null : room.id }));
+    });
+    _mapGroup.appendChild(path);
+  }
+
+  // Faint 5 ft grid over every floor.
+  let all = d;
+  for (const room of state.rooms) all += cellPath(roomCells(room));
+  _mapGroup.appendChild(el('path', { d: all, fill: 'url(#floor-grid)', 'pointer-events': 'none' }));
+}
+
+function renderWalls(state: DungeonState, owners: Map<string, string>, links: Set<string>): void {
+  // The face of the entrance is open: you walk in from outside the map.
+  const entrance = state.corridors.find(c => c.fromId === 'entrance');
+  const skip = new Set<string>();
+  if (entrance) {
+    const back = opposite(entrance.direction);
+    for (let y = entrance.rect.y; y < entrance.rect.y + entrance.rect.h; y++) {
+      for (let x = entrance.rect.x; x < entrance.rect.x + entrance.rect.w; x++) {
+        const outside = advance({ x, y }, back, 1);
+        if (!owners.has(posKey(outside.x, outside.y)) && onEntryFace(entrance.rect, entrance.direction, x, y)) {
+          skip.add(`${x},${y},${back}`);
+        }
+      }
+    }
+  }
+
+  let d = '';
+  for (const [key, owner] of owners) {
+    const [x, y] = key.split(',').map(Number);
+    const px = x * CELL;
+    const py = y * CELL;
+    const dirs: Direction[] = ['north', 'east', 'south', 'west'];
+    for (const dir of dirs) {
+      const n = advance({ x, y }, dir, 1);
+      const other = owners.get(posKey(n.x, n.y));
+      let wall = false;
+      if (other === undefined) wall = !skip.has(`${x},${y},${dir}`);
+      else if (other !== owner && !isLinked(links, owner, other)) {
+        // Both sides are floor: draw the shared wall once.
+        wall = dir === 'east' || dir === 'south';
+      }
+      if (!wall) continue;
+      switch (dir) {
+        case 'north': d += `M${px} ${py}h${CELL}`; break;
+        case 'south': d += `M${px} ${py + CELL}h${CELL}`; break;
+        case 'west':  d += `M${px} ${py}v${CELL}`; break;
+        case 'east':  d += `M${px + CELL} ${py}v${CELL}`; break;
+      }
+    }
+  }
+  _mapGroup.appendChild(el('path', {
+    d, fill: 'none', stroke: INK, 'stroke-width': 2, 'stroke-linecap': 'square', 'pointer-events': 'none',
+  }));
+}
+
+function onEntryFace(rect: GridRect, dir: Direction, x: number, y: number): boolean {
+  switch (dir) {
+    case 'north': return y === rect.y + rect.h - 1;
+    case 'south': return y === rect.y;
+    case 'east':  return x === rect.x;
+    case 'west':  return x === rect.x + rect.w - 1;
   }
 }
 
-export function renderMap(state: DungeonState): void {
-  while (_mapGroup.firstChild) _mapGroup.removeChild(_mapGroup.firstChild);
+/** The line segment (in px) across the entry face of a passage. */
+function entryFace(rect: GridRect, dir: Direction): { x1: number; y1: number; x2: number; y2: number } {
+  switch (dir) {
+    case 'north': return { x1: rect.x * CELL, y1: (rect.y + rect.h) * CELL, x2: (rect.x + rect.w) * CELL, y2: (rect.y + rect.h) * CELL };
+    case 'south': return { x1: rect.x * CELL, y1: rect.y * CELL, x2: (rect.x + rect.w) * CELL, y2: rect.y * CELL };
+    case 'east':  return { x1: rect.x * CELL, y1: rect.y * CELL, x2: rect.x * CELL, y2: (rect.y + rect.h) * CELL };
+    case 'west':  return { x1: (rect.x + rect.w) * CELL, y1: rect.y * CELL, x2: (rect.x + rect.w) * CELL, y2: (rect.y + rect.h) * CELL };
+  }
+}
 
-  if (!state.started) {
-    renderEntrance();
+function renderDoor(corridor: Corridor, doorType: DoorType): void {
+  const f = entryFace(corridor.rect, corridor.direction);
+  const cx = (f.x1 + f.x2) / 2;
+  const cy = (f.y1 + f.y2) / 2;
+  const vertical = isVertical(corridor.direction); // face runs horizontally when travelling N/S
+  const span = Math.max(Math.abs(f.x2 - f.x1), Math.abs(f.y2 - f.y1));
+  const len = Math.max(span - 3, CELL * 0.6);
+  const thick = 4;
+
+  const g = el<SVGGElement>('g', { 'pointer-events': 'none' });
+  const bw = vertical ? len : thick;
+  const bh = vertical ? thick : len;
+
+  if (doorType === 'stone_secret') {
+    // Hide the wall behind the door glyph so the S reads clearly.
+    g.appendChild(el('rect', { x: cx - bw / 2, y: cy - bh / 2, width: bw, height: bh, fill: FLOOR }));
+    const t = el<SVGTextElement>('text', {
+      x: cx, y: cy, 'font-family': 'Courier New, monospace', 'font-size': 9, 'font-weight': 'bold',
+      fill: INK, 'dominant-baseline': 'central', 'text-anchor': 'middle',
+    });
+    t.textContent = 'S';
+    g.appendChild(t);
+    _mapGroup.appendChild(g);
     return;
   }
 
-  // Corridors first (fills only, under rooms)
-  for (const corridor of state.corridors) {
-    renderCorridorFill(corridor);
+  if (doorType === 'archway') {
+    const post = 2.5;
+    const a = vertical ? { x: cx - len / 2 - post / 2, y: cy - post / 2 } : { x: cx - post / 2, y: cy - len / 2 - post / 2 };
+    const b = vertical ? { x: cx + len / 2 - post / 2, y: cy - post / 2 } : { x: cx - post / 2, y: cy + len / 2 - post / 2 };
+    g.appendChild(el('rect', { x: a.x, y: a.y, width: post, height: post, fill: INK }));
+    g.appendChild(el('rect', { x: b.x, y: b.y, width: post, height: post, fill: INK }));
+    _mapGroup.appendChild(g);
+    return;
   }
 
-  // Room fills + walls. Walls are drawn with gaps/doors at exits.
-  state.rooms.forEach((room, i) => {
-    renderRoom(room, state.selectedRoomId === room.id, state.corridors, i + 1);
-  });
+  const solid = doorType === 'stone' || doorType === 'iron';
+  g.appendChild(el('rect', {
+    x: cx - bw / 2, y: cy - bh / 2, width: bw, height: bh,
+    fill: solid ? INK : FLOOR, stroke: INK, 'stroke-width': 1,
+  }));
 
-  // Passage door symbols (on corridor stubs — drawn after rooms so they sit on top)
-  for (const corridor of state.corridors) {
-    if (corridor.doorType) renderPassageDoor(corridor);
+  if (doorType === 'wooden_locked' || doorType === 'iron') {
+    g.appendChild(el('circle', { cx, cy, r: 2, fill: solid ? FLOOR : INK, stroke: INK, 'stroke-width': 0.5 }));
   }
-
-  renderEntrance();
-
-  for (const cursor of state.cursors) {
-    renderCursor(cursor.position);
+  if (doorType === 'wooden_stuck') {
+    const t = el<SVGTextElement>('text', {
+      x: cx, y: cy, 'font-family': 'Courier New, monospace', 'font-size': 7, fill: INK,
+      'dominant-baseline': 'central', 'text-anchor': 'middle',
+    });
+    t.textContent = '×';
+    g.appendChild(t);
   }
-
-  autoFit(state);
-}
-
-function renderEntrance(): void {
-  const { x, y } = gridToSvg(0, 0);
-  const size = CELL * 0.8;
-
-  const g = el<SVGGElement>('g');
-
-  const circ = el<SVGCircleElement>('circle');
-  setAttrs(circ, { cx: x, cy: y, r: size / 2, fill: 'white', stroke: '#1a1a1a', 'stroke-width': 1.5 });
-  g.appendChild(circ);
-
-  const txt = el<SVGTextElement>('text');
-  setAttrs(txt, { x, y, 'font-family': 'Courier New', 'font-size': 10, fill: '#1a1a1a',
-    'dominant-baseline': 'middle', 'text-anchor': 'middle', 'font-weight': 'bold' });
-  txt.textContent = 'E';
-  g.appendChild(txt);
-
+  if (doorType === 'portcullis') {
+    const steps = Math.max(2, Math.round(len / 4));
+    for (let i = 1; i < steps; i++) {
+      const o = -len / 2 + (len / steps) * i;
+      g.appendChild(vertical
+        ? el('line', { x1: cx + o, y1: cy - thick, x2: cx + o, y2: cy + thick, stroke: INK, 'stroke-width': 1 })
+        : el('line', { x1: cx - thick, y1: cy + o, x2: cx + thick, y2: cy + o, stroke: INK, 'stroke-width': 1 }));
+    }
+  }
   _mapGroup.appendChild(g);
 }
 
-// Draws only the corridor fill rectangle. Door symbols for passage doors are
-// drawn separately after rooms so they sit on top of both.
-function renderCorridorFill(corridor: Corridor): void {
-  const r = svgRect(corridor.rect);
-  const rect = el<SVGRectElement>('rect');
-  setAttrs(rect, {
-    x: r.x, y: r.y,
-    width: Math.max(r.w, CELL * 0.5),
-    height: Math.max(r.h, CELL * 0.5),
-    class: 'map-corridor',
-  });
-  _mapGroup.appendChild(rect);
-}
-
-function renderRoom(room: Room, selected: boolean, corridors: Corridor[], roomNumber: number): void {
-  const r = svgRect(room.rect);
-  const fill = selected ? '#ede8de' : 'white';
-
-  // 1. Room fill
-  if (room.shape === 'circle') {
-    const ellipse = el<SVGEllipseElement>('ellipse');
-    setAttrs(ellipse, {
-      cx: r.x + r.w / 2, cy: r.y + r.h / 2,
-      rx: r.w / 2, ry: r.h / 2,
-      fill, stroke: 'none',
-      'data-room-id': room.id, style: 'cursor:pointer',
-    });
-    ellipse.addEventListener('click', () => selectRoom(room.id));
-    _mapGroup.appendChild(ellipse);
-  } else {
-    const fillRect = el<SVGRectElement>('rect');
-    setAttrs(fillRect, {
-      x: r.x, y: r.y, width: r.w, height: r.h,
-      fill, stroke: 'none',
-      'data-room-id': room.id, style: 'cursor:pointer',
-    });
-    fillRect.addEventListener('click', () => selectRoom(room.id));
-    _mapGroup.appendChild(fillRect);
-  }
-
-  // 2. Room border — ellipse for circles, rect for rectangles/squares/irregular
-  if (room.shape === 'circle') {
-    const borderEll = el<SVGEllipseElement>('ellipse');
-    setAttrs(borderEll, {
-      cx: r.x + r.w / 2, cy: r.y + r.h / 2,
-      rx: r.w / 2, ry: r.h / 2,
-      fill: 'none', stroke: '#1a1a1a', 'stroke-width': 2,
-      'pointer-events': 'none',
-    });
-    _mapGroup.appendChild(borderEll);
-  } else {
-    const border = el<SVGRectElement>('rect');
-    setAttrs(border, {
-      x: r.x, y: r.y, width: r.w, height: r.h,
-      fill: 'none', stroke: '#1a1a1a', 'stroke-width': 2,
-      'pointer-events': 'none',
-    });
-    _mapGroup.appendChild(border);
-  }
-
-  // 3. Wall openings and door symbols for each exit
-  for (const exit of room.exits) {
-    const corridor = exit.corridorId ? corridors.find(c => c.id === exit.corridorId) : null;
-    // Corridor perpendicular width in SVG px — used to size the opening
-    const perpWidth = corridor
-      ? ((exit.direction === 'north' || exit.direction === 'south')
-          ? corridor.rect.w * CELL
-          : corridor.rect.h * CELL)
-      : CELL;
-
-    renderWallOpening(exit.exitPoint, exit.direction, perpWidth);
-
-    if (exit.doorType) {
-      renderDoorSymbol(exit.exitPoint, exit.direction, exit.doorType);
+function renderStairs(corridors: Corridor[]): void {
+  let d = '';
+  for (const c of corridors) {
+    if (c.kind !== 'stairs') continue;
+    const r = c.rect;
+    if (isVertical(c.direction)) {
+      for (let y = r.y; y <= r.y + r.h; y++) d += `M${r.x * CELL} ${y * CELL}h${r.w * CELL}`;
+    } else {
+      for (let x = r.x; x <= r.x + r.w; x++) d += `M${x * CELL} ${r.y * CELL}v${r.h * CELL}`;
     }
   }
+  if (d) _mapGroup.appendChild(el('path', { d, stroke: INK, 'stroke-width': 1, fill: 'none', 'pointer-events': 'none' }));
+}
 
-  // 4. Room number label
-  const txt = el<SVGTextElement>('text');
-  setAttrs(txt, {
-    x: r.x + r.w / 2, y: r.y + r.h / 2,
-    class: 'map-label', 'pointer-events': 'none',
+function renderEntrance(state: DungeonState): void {
+  const c = state.corridors.find(k => k.fromId === 'entrance');
+  if (!c) return;
+  const f = entryFace(c.rect, c.direction);
+  const back = opposite(c.direction);
+  const off = CELL * 1.1;
+  const dx = back === 'east' ? off : back === 'west' ? -off : 0;
+  const dy = back === 'south' ? off : back === 'north' ? -off : 0;
+  const cx = (f.x1 + f.x2) / 2 + dx;
+  const cy = (f.y1 + f.y2) / 2 + dy;
+
+  const g = el<SVGGElement>('g', { 'pointer-events': 'none' });
+  g.appendChild(el('circle', { cx, cy, r: CELL * 0.7, fill: 'white', stroke: INK, 'stroke-width': 1.5 }));
+  const t = el<SVGTextElement>('text', {
+    x: cx, y: cy, 'font-family': 'Courier New, monospace', 'font-size': 10, 'font-weight': 'bold',
+    fill: INK, 'dominant-baseline': 'central', 'text-anchor': 'middle',
   });
-  txt.textContent = String(roomNumber);
-  _mapGroup.appendChild(txt);
+  t.textContent = 'E';
+  g.appendChild(t);
+  _mapGroup.appendChild(g);
 }
 
-// Draws a white rectangle over the room wall at an exit, erasing the stroke
-// to create a visible opening. corridorWidth is the perpendicular SVG extent.
-function renderWallOpening(exitPoint: GridPos, dir: Direction, corridorWidth: number): void {
-  const ex = exitPoint.x * CELL;
-  const ey = exitPoint.y * CELL;
-  const T = 4; // thickness — enough to cover the 2px stroke with subpixel margin
-
-  let rx: number, ry: number, rw: number, rh: number;
-  switch (dir) {
-    // North exit: exitPoint is one cell north of the room. Wall at (exitPoint.y+1)*CELL.
-    case 'north':
-      rx = ex - corridorWidth / 2;
-      ry = (exitPoint.y + 1) * CELL - T / 2;
-      rw = corridorWidth; rh = T;
-      break;
-    // South exit: exitPoint is one cell south of the room. Wall at exitPoint.y*CELL.
-    case 'south':
-      rx = ex - corridorWidth / 2;
-      ry = ey - T / 2;
-      rw = corridorWidth; rh = T;
-      break;
-    // East exit: wall at exitPoint.x*CELL.
-    case 'east':
-      rx = ex - T / 2;
-      ry = ey - corridorWidth / 2;
-      rw = T; rh = corridorWidth;
-      break;
-    // West exit: exitPoint is one cell west of the room. Wall at (exitPoint.x+1)*CELL.
-    case 'west':
-      rx = (exitPoint.x + 1) * CELL - T / 2;
-      ry = ey - corridorWidth / 2;
-      rw = T; rh = corridorWidth;
-      break;
-  }
-
-  const gap = el<SVGRectElement>('rect');
-  setAttrs(gap, { x: rx, y: ry, width: rw, height: rh, fill: 'white', stroke: 'none' });
-  _mapGroup.appendChild(gap);
-}
-
-// Draws a door symbol at the room wall for an exit door.
-// The door sits ON the wall edge (one cell back from exitPoint in the exit direction).
-// Symbol is a thin perpendicular bar (2px travel × CELL*0.7 perpendicular).
-function renderDoorSymbol(exitPoint: GridPos, dir: Direction, doorType: DoorType): void {
-  if (doorType === 'archway') return;
-
-  const ex = exitPoint.x * CELL;
-  const ey = exitPoint.y * CELL;
-  const barLen = CELL * 0.7;  // perpendicular extent
-  const barThick = 2;          // extent along travel direction
-
-  let dx: number, dy: number, dw: number, dh: number;
-  switch (dir) {
-    case 'north':
-      dx = ex - barLen / 2;
-      dy = (exitPoint.y + 1) * CELL - barThick / 2;
-      dw = barLen; dh = barThick;
-      break;
-    case 'south':
-      dx = ex - barLen / 2;
-      dy = ey - barThick / 2;
-      dw = barLen; dh = barThick;
-      break;
-    case 'east':
-      dx = ex - barThick / 2;
-      dy = ey - barLen / 2;
-      dw = barThick; dh = barLen;
-      break;
-    case 'west':
-      dx = (exitPoint.x + 1) * CELL - barThick / 2;
-      dy = ey - barLen / 2;
-      dw = barThick; dh = barLen;
-      break;
-  }
-
-  drawDoorBar(dx, dy, dw, dh, dir, doorType);
-}
-
-// Passage-door stub: door sits at the entry face of the corridor rect
-// (the end closest to the element that spawned it).
-function renderPassageDoor(corridor: Corridor): void {
-  const r = svgRect(corridor.rect);
-  const barLen = CELL * 0.7;
-  const barThick = 2;
-  const cx = r.x + r.w / 2;
-  const cy = r.y + r.h / 2;
-
-  let dx: number, dy: number, dw: number, dh: number;
-  switch (corridor.direction) {
-    case 'north': // entry = south edge
-      dx = cx - barLen / 2; dy = r.y + r.h - barThick / 2;
-      dw = barLen; dh = barThick;
-      break;
-    case 'south': // entry = north edge
-      dx = cx - barLen / 2; dy = r.y - barThick / 2;
-      dw = barLen; dh = barThick;
-      break;
-    case 'east': // entry = west edge
-      dx = r.x - barThick / 2; dy = cy - barLen / 2;
-      dw = barThick; dh = barLen;
-      break;
-    case 'west': // entry = east edge
-      dx = r.x + r.w - barThick / 2; dy = cy - barLen / 2;
-      dw = barThick; dh = barLen;
-      break;
-  }
-
-  drawDoorBar(dx, dy, dw, dh, corridor.direction, corridor.doorType!);
-}
-
-// Shared door bar renderer used by both renderDoorSymbol and renderPassageDoor.
-function drawDoorBar(
-  dx: number, dy: number, dw: number, dh: number,
-  dir: Direction, doorType: DoorType,
-): void {
-  if (doorType === 'stone_secret') {
-    const txt = el<SVGTextElement>('text');
-    setAttrs(txt, {
-      x: dx + dw / 2, y: dy + dh / 2,
-      'font-family': 'Courier New', 'font-size': 8, fill: '#1a1a1a',
-      'dominant-baseline': 'middle', 'text-anchor': 'middle',
+function renderRoomLabels(state: DungeonState): void {
+  state.rooms.forEach((room: Room, i) => {
+    const r = room.rect;
+    const cx = (r.x + r.w / 2) * CELL;
+    const cy = (r.y + r.h / 2) * CELL;
+    const glyph = CONTENT_GLYPH[room.contents] ?? '';
+    const t = el<SVGTextElement>('text', {
+      x: cx, y: glyph ? cy - 5 : cy,
+      'font-family': 'Courier New, monospace', 'font-size': 18, 'font-weight': 'bold', stroke: FLOOR, 'stroke-width': 3, 'paint-order': 'stroke',
+      fill: INK, 'dominant-baseline': 'central', 'text-anchor': 'middle', 'pointer-events': 'none',
     });
-    txt.textContent = 'S';
-    _mapGroup.appendChild(txt);
-    return;
-  }
-
-  const bar = el<SVGRectElement>('rect');
-  setAttrs(bar, { x: dx, y: dy, width: dw, height: dh, class: 'map-door' });
-  _mapGroup.appendChild(bar);
-
-  if (doorType === 'wooden_locked' || doorType === 'iron') {
-    const circ = el<SVGCircleElement>('circle');
-    setAttrs(circ, {
-      cx: dx + dw / 2, cy: dy + dh / 2, r: 2,
-      fill: 'white', stroke: '#1a1a1a', 'stroke-width': 1,
-    });
-    _mapGroup.appendChild(circ);
-  }
-
-  if (doorType === 'portcullis') {
-    const isHoriz = dir === 'north' || dir === 'south';
-    for (let i = 1; i < 3; i++) {
-      const line = el<SVGLineElement>('line');
-      if (isHoriz) {
-        const lx = dx + (dw / 3) * i;
-        setAttrs(line, { x1: lx, y1: dy, x2: lx, y2: dy + dh, stroke: 'white', 'stroke-width': 0.5 });
-      } else {
-        const ly = dy + (dh / 3) * i;
-        setAttrs(line, { x1: dx, y1: ly, x2: dx + dw, y2: ly, stroke: 'white', 'stroke-width': 0.5 });
-      }
-      _mapGroup.appendChild(line);
+    t.textContent = String(i + 1);
+    _mapGroup.appendChild(t);
+    if (glyph) {
+      const g = el<SVGTextElement>('text', {
+        x: cx, y: cy + 11,
+        'font-family': 'Courier New, monospace', 'font-size': 12, 'font-weight': 'bold', fill: '#7a2e1d',
+        'dominant-baseline': 'central', 'text-anchor': 'middle', 'pointer-events': 'none',
+      });
+      g.textContent = glyph;
+      _mapGroup.appendChild(g);
     }
-  }
+  });
 }
 
-function renderCursor(pos: { x: number; y: number }): void {
-  const { x, y } = gridToSvg(pos.x, pos.y);
-  const diamond = el<SVGPolygonElement>('polygon');
-  const s = CELL * 0.3;
-  diamond.setAttribute('points', `${x},${y - s} ${x + s},${y} ${x},${y + s} ${x - s},${y}`);
-  diamond.setAttribute('fill', '#888');
-  diamond.setAttribute('opacity', '0.5');
-  _mapGroup.appendChild(diamond);
-}
-
-function selectRoom(roomId: string): void {
-  setState(s => ({ ...s, selectedRoomId: s.selectedRoomId === roomId ? null : roomId }));
-}
+// ── Fitting ─────────────────────────────────────────────────────────────────
 
 function getBounds(state: DungeonState): { minX: number; minY: number; maxX: number; maxY: number } | null {
-  const rects: { x: number; y: number; w: number; h: number }[] = [
-    ...state.rooms.map(r => r.rect),
-    ...state.corridors.map(c => c.rect),
-  ];
+  const rects: GridRect[] = [...state.rooms.map(r => r.rect), ...state.corridors.map(c => c.rect)];
   if (rects.length === 0) return null;
-
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const r of rects) {
     minX = Math.min(minX, r.x);
@@ -431,71 +424,91 @@ function getBounds(state: DungeonState): { minX: number; minY: number; maxX: num
     maxX = Math.max(maxX, r.x + r.w);
     maxY = Math.max(maxY, r.y + r.h);
   }
-  // Include origin (entrance)
-  minX = Math.min(minX, -1);
-  minY = Math.min(minY, -1);
-  maxX = Math.max(maxX, 1);
-  maxY = Math.max(maxY, 1);
-
-  return { minX, minY, maxX, maxY };
+  // Leave space for the entrance marker.
+  return { minX: minX - 2, minY: minY - 2, maxX: maxX + 2, maxY: maxY + 2 };
 }
 
 function autoFit(state: DungeonState): void {
   const bounds = getBounds(state);
   if (!bounds) return;
 
-  const { minX, minY, maxX, maxY } = bounds;
-  const contentW = (maxX - minX + PADDING * 2) * CELL;
-  const contentH = (maxY - minY + PADDING * 2) * CELL;
+  const box = _svg.getBoundingClientRect();
+  if (box.width === 0 || box.height === 0) return;
 
-  const svgRect_ = _svg.getBoundingClientRect();
-  if (svgRect_.width === 0 || svgRect_.height === 0) return;
-
-  const scaleX = svgRect_.width / contentW;
-  const scaleY = svgRect_.height / contentH;
-  _zoom = Math.min(scaleX, scaleY, 2);
-
-  _viewX = (-minX + PADDING) * CELL * _zoom + (svgRect_.width - contentW * _zoom) / 2;
-  _viewY = (-minY + PADDING) * CELL * _zoom + (svgRect_.height - contentH * _zoom) / 2;
-
+  const contentW = (bounds.maxX - bounds.minX + PADDING * 2) * CELL;
+  const contentH = (bounds.maxY - bounds.minY + PADDING * 2) * CELL;
+  _zoom = Math.min(box.width / contentW, box.height / contentH, 2.5);
+  _viewX = (-bounds.minX + PADDING) * CELL * _zoom + (box.width - contentW * _zoom) / 2;
+  _viewY = (-bounds.minY + PADDING) * CELL * _zoom + (box.height - contentH * _zoom) / 2;
   applyTransform();
 }
 
+// ── Export ──────────────────────────────────────────────────────────────────
+
+/** Exports the whole dungeon (not just the current view) as a PNG. */
 export function exportPNG(): void {
-  const svgEl = document.getElementById('dungeon-map') as unknown as SVGSVGElement;
-  const bbox = svgEl.getBoundingClientRect();
+  const state = _lastState;
+  if (!state || !state.started) return;
+  const bounds = getBounds(state);
+  if (!bounds) return;
+
   const scale = 2;
-  const w = bbox.width * scale;
-  const h = bbox.height * scale;
+  const pad = PADDING;
+  const vbX = (bounds.minX - pad) * CELL;
+  const vbY = (bounds.minY - pad) * CELL;
+  const vbW = (bounds.maxX - bounds.minX + pad * 2) * CELL;
+  const vbH = (bounds.maxY - bounds.minY + pad * 2) * CELL;
+  const footer = 28; // px of caption space below the map
 
-  const serialiser = new XMLSerializer();
-  const svgStr = serialiser.serializeToString(svgEl);
-  const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
+  const svg = el<SVGSVGElement>('svg', {
+    xmlns: SVG_NS, viewBox: `${vbX} ${vbY} ${vbW} ${vbH}`, width: vbW * scale, height: vbH * scale,
+  });
+  svg.appendChild(el('rect', { x: vbX, y: vbY, width: vbW, height: vbH, fill: '#faf8f3' }));
+  const copy = _mapGroup.cloneNode(true) as SVGGElement;
+  copy.removeAttribute('transform');
+  svg.appendChild(copy);
 
+  const url = URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(svg)], { type: 'image/svg+xml;charset=utf-8' }));
   const img = new Image();
   img.onload = () => {
+    const mapW = vbW * scale;
+    const mapH = vbH * scale;
+    const font = `${10 * scale}px Courier New`;
+    const margin = 12 * scale;
+    const gap = 6 * scale;
+    const barW = 10 * CELL * scale; // 50 ft
+    const caption = `Seed ${state.seed} · level ${state.settings.level} · ${state.rooms.length} rooms`;
+
+    // A narrow dungeon can be thinner than its own footer, so widen the canvas
+    // (leaving the map at the same scale, centred) until both labels fit.
+    const probe = document.createElement('canvas').getContext('2d')!;
+    probe.font = font;
+    const width = exportCanvasWidth(mapW, {
+      margin, gap, barWidth: barW,
+      scaleLabelWidth: probe.measureText('50 ft').width,
+      captionWidth: probe.measureText(caption).width,
+    });
+
     const canvas = document.createElement('canvas');
-    canvas.width = w;
-    canvas.height = h;
+    canvas.width = width;
+    canvas.height = mapH + footer * scale;
     const ctx = canvas.getContext('2d')!;
     ctx.fillStyle = '#faf8f3';
-    ctx.fillRect(0, 0, w, h);
-    ctx.drawImage(img, 0, 0, w, h);
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, (width - mapW) / 2, 0, mapW, mapH);
 
-    // Scale bar
-    const barW = 100 * scale;
-    const barH = 8 * scale;
-    const bx = 20 * scale;
-    const by = h - 30 * scale;
-    ctx.fillStyle = '#1a1a1a';
-    ctx.fillRect(bx, by, barW, barH);
-    ctx.fillStyle = '#faf8f3';
-    ctx.font = `${10 * scale}px Courier New`;
-    ctx.fillText('100 ft', bx + barW + 6 * scale, by + barH);
+    const y = mapH + (footer / 2) * scale;
+    ctx.fillStyle = INK;
+    ctx.fillRect(margin, y - 3 * scale, barW, 6 * scale);
+    ctx.font = font;
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    ctx.fillText('50 ft', margin + barW + gap, y);
+    ctx.textAlign = 'right';
+    ctx.fillText(caption, width - margin, y);
 
     const link = document.createElement('a');
-    link.download = 'dungeon.png';
+    link.download = `dungeon-${state.seed}.png`;
     link.href = canvas.toDataURL('image/png');
     link.click();
     URL.revokeObjectURL(url);

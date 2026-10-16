@@ -1,24 +1,5 @@
-import type { DungeonState, DungeonSettings } from './types.js';
-
-const DEFAULT_SETTINGS: DungeonSettings = {
-  level: 1,
-  size: 'medium',
-  startDirection: 'north',
-};
-
-function createInitialState(): DungeonState {
-  return {
-    settings: { ...DEFAULT_SETTINGS },
-    started: false,
-    rooms: [],
-    corridors: [],
-    cursors: [],
-    rollHistory: [],
-    stepCount: 0,
-    selectedRoomId: null,
-    occupied: [],
-  };
-}
+import type { DungeonState } from './types.js';
+import { createInitialState } from './generator.js';
 
 let _state: DungeonState = createInitialState();
 const _listeners: Array<() => void> = [];
@@ -51,21 +32,30 @@ export function saveToFile(): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = 'dungeon.json';
+  a.download = `dungeon-${_state.seed}.json`;
   a.click();
   URL.revokeObjectURL(url);
 }
 
-export function loadFromJSON(json: string): boolean {
+export type LoadResult = { ok: true } | { ok: false; reason: string };
+
+export function loadFromJSON(json: string): LoadResult {
   try {
-    const parsed = JSON.parse(json) as DungeonState;
-    // minimal shape check
-    if (!parsed.rooms || !parsed.corridors || !parsed.settings) return false;
-    if (!Array.isArray(parsed.occupied)) parsed.occupied = [];
-    _state = parsed;
+    const parsed = JSON.parse(json) as Partial<DungeonState>;
+    if (!parsed.rooms || !parsed.corridors || !parsed.settings) {
+      return { ok: false, reason: 'This does not look like a dungeon file.' };
+    }
+    if (parsed.version !== 2) {
+      return { ok: false, reason: 'This file was saved by an older version and can no longer be opened.' };
+    }
+    const loaded = parsed as DungeonState;
+    loaded.targetSteps ??= loaded.stepCount;
+    loaded.orphanedNotes ??= [];
+    for (const c of loaded.cursors) c.path ??= 'e';
+    _state = loaded;
     _listeners.forEach(fn => fn());
-    return true;
+    return { ok: true };
   } catch {
-    return false;
+    return { ok: false, reason: 'The file could not be read.' };
   }
 }

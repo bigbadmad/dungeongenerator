@@ -1,6 +1,6 @@
 import type { DungeonState } from '../types.js';
 import { setState } from '../state.js';
-import { buildRoomDescription } from '../generator.js';
+import { describeRoomLines } from '../generator.js';
 
 export function renderRoomKey(state: DungeonState): void {
   const list = document.getElementById('room-key-list') as HTMLDivElement;
@@ -11,7 +11,6 @@ export function renderRoomKey(state: DungeonState): void {
     empty.style.cssText = 'color:#999;font-size:11px;padding:4px';
     empty.textContent = 'No rooms yet.';
     list.appendChild(empty);
-    return;
   }
 
   state.rooms.forEach((room, index) => {
@@ -20,8 +19,8 @@ export function renderRoomKey(state: DungeonState): void {
     entry.dataset.roomId = room.id;
 
     entry.addEventListener('click', (e) => {
-      if ((e.target as HTMLElement).tagName === 'TEXTAREA' ||
-          (e.target as HTMLElement).tagName === 'BUTTON') return;
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === 'TEXTAREA' || tag === 'BUTTON') return;
       setState(s => ({ ...s, selectedRoomId: s.selectedRoomId === room.id ? null : room.id }));
     });
 
@@ -30,12 +29,13 @@ export function renderRoomKey(state: DungeonState): void {
     headerEl.textContent = `Room ${index + 1}`;
     entry.appendChild(headerEl);
 
-    const bodyEl = document.createElement('div');
-    bodyEl.className = 'room-key-entry-body';
-    bodyEl.textContent = buildRoomDescription(room);
-    entry.appendChild(bodyEl);
+    for (const line of describeRoomLines(room)) {
+      const bodyEl = document.createElement('div');
+      bodyEl.className = 'room-key-entry-body';
+      bodyEl.textContent = line;
+      entry.appendChild(bodyEl);
+    }
 
-    // Notes
     if (room.notes) {
       const notesEl = document.createElement('div');
       notesEl.className = 'room-key-entry-notes';
@@ -43,7 +43,6 @@ export function renderRoomKey(state: DungeonState): void {
       entry.appendChild(notesEl);
     }
 
-    // Edit notes
     const editBtn = document.createElement('button');
     editBtn.className = 'small secondary';
     editBtn.style.marginTop = '4px';
@@ -56,6 +55,43 @@ export function renderRoomKey(state: DungeonState): void {
 
     list.appendChild(entry);
   });
+
+  renderOrphanedNotes(state, list);
+}
+
+/** Notes whose room no longer exists after an override changed the layout. */
+function renderOrphanedNotes(state: DungeonState, list: HTMLDivElement): void {
+  if (state.orphanedNotes.length === 0) return;
+
+  const box = document.createElement('div');
+  box.className = 'room-key-orphans';
+
+  const title = document.createElement('div');
+  title.className = 'room-key-entry-header';
+  title.textContent = 'Notes from rooms that changed';
+  box.appendChild(title);
+
+  const hint = document.createElement('div');
+  hint.className = 'room-key-entry-body';
+  hint.textContent = 'An override altered the layout. These notes return if the room does (e.g. Undo).';
+  box.appendChild(hint);
+
+  state.orphanedNotes.forEach((o, i) => {
+    const row = document.createElement('div');
+    row.className = 'room-key-entry-notes';
+    row.textContent = `${o.label} — ${o.notes}`;
+
+    const dismiss = document.createElement('button');
+    dismiss.className = 'small secondary';
+    dismiss.style.marginLeft = '6px';
+    dismiss.textContent = 'Dismiss';
+    dismiss.addEventListener('click', () => {
+      setState(s => ({ ...s, orphanedNotes: s.orphanedNotes.filter((_, j) => j !== i) }));
+    });
+    row.appendChild(dismiss);
+    box.appendChild(row);
+  });
+  list.appendChild(box);
 }
 
 function toggleNotesEditor(entry: HTMLDivElement, roomId: string, currentNotes: string): void {

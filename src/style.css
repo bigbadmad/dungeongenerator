@@ -81,12 +81,40 @@ header h1 {
   letter-spacing: 0.05em;
 }
 
+#settings-panel button {
+  width: 100%;
+  margin-top: 4px;
+  padding: 6px 10px;
+}
+
+#settings-panel .hint {
+  text-transform: none;
+  letter-spacing: 0;
+  color: #777;
+}
+
+#settings-panel input[type="text"] {
+  width: 100%;
+}
+
 #generation-controls {
   padding: 8px 10px;
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
+  flex-shrink: 0;
+}
+
+#status-line {
+  padding: 0 10px 8px;
+  font-size: 11px;
+  color: #555;
   border-bottom: 1px solid #ccc;
   flex-shrink: 0;
+}
+
+#status-line:empty {
+  display: none;
 }
 
 #roll-results {
@@ -221,6 +249,25 @@ select {
   font-size: 12px;
 }
 
+.roll-card.overridden {
+  border-color: #b45309;
+  background: #fdf6e8;
+}
+
+.roll-card-was {
+  color: #92400e;
+  font-size: 10px;
+  margin-top: 2px;
+}
+
+.roll-step {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #777;
+  margin-top: 6px;
+}
+
 .roll-card-dice {
   color: #666;
   font-size: 10px;
@@ -272,6 +319,14 @@ select {
   margin-top: 2px;
 }
 
+.room-key-orphans {
+  margin-top: 8px;
+  padding: 6px;
+  border: 1px dashed #b45309;
+  background: #fdf6e8;
+  font-size: 11px;
+}
+
 .room-key-notes-editor {
   width: 100%;
   font-family: inherit;
@@ -281,41 +336,6 @@ select {
   background: #faf8f3;
   resize: vertical;
   min-height: 40px;
-}
-
-/* Map SVG elements */
-.map-room {
-  fill: white;
-  stroke: #1a1a1a;
-  stroke-width: 2;
-}
-
-.map-corridor {
-  fill: white;
-  stroke: #1a1a1a;
-  stroke-width: 1;
-}
-
-.map-door {
-  fill: #1a1a1a;
-}
-
-.map-door-circle {
-  fill: none;
-  stroke: #1a1a1a;
-  stroke-width: 1;
-}
-
-.map-label {
-  font-family: 'Courier New', Courier, monospace;
-  font-size: 8px;
-  fill: #1a1a1a;
-  dominant-baseline: middle;
-  text-anchor: middle;
-}
-
-.map-room.selected {
-  fill: #ede8de;
 }
 
 /* Responsive */

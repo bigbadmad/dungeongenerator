@@ -27,9 +27,8 @@ function init(): void {
     const reader = new FileReader();
     reader.onload = (e) => {
       const text = e.target?.result as string;
-      if (!loadFromJSON(text)) {
-        alert('Failed to load dungeon file. The file may be invalid or corrupted.');
-      }
+      const result = loadFromJSON(text);
+      if (!result.ok) alert(`Failed to load dungeon file. ${result.reason}`);
       fileInput.value = '';
     };
     reader.readAsText(file);
