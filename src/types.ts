@@ -153,29 +153,18 @@ export interface GenerationCursor {
   width: number;
   zone: number;
   forced?: ForcedAction;
-  /**
-   * Lineage of this cursor ("e.0.2" = third child of the entrance's first
-   * child). Stable under replay, so rooms can be identified by it.
-   */
-  path: string;
 }
 
 export interface RollRecord {
   id: string;
-  /** Stable key (`step|table|n`) used to attach overrides across regeneration. */
-  key: string;
   table: string;
   /** Extra context, e.g. "left branch". */
   note?: string;
   /** The die as actually rolled (1..sides). */
   diceResult: number;
   sides: number;
-  /** The outcome that was applied (the override if there is one). */
   outcome: string;
   outcomeKey: string;
-  overridden: boolean;
-  /** Label of the natural, un-overridden result. */
-  naturalOutcome?: string;
   step: number;
 }
 
@@ -199,24 +188,6 @@ export interface DungeonState {
   rollHistory: RollRecord[];
   stepCount: number;
   selectedRoomId: string | null;
-  /** roll key -> outcome value chosen by the user. */
-  overrides: Record<string, string>;
   /** zone id -> dominant monster name. */
   zones: Record<string, string>;
-  /**
-   * How many steps the user has asked for. Replay targets this rather than
-   * `stepCount`, which an override can shorten by ending the dungeon early.
-   */
-  targetSteps: number;
-  /** Notes whose room disappeared when an override changed the layout. */
-  orphanedNotes: OrphanedNote[];
-}
-
-export interface OrphanedNote {
-  /** What the room used to be, e.g. "Rectangular room, 30×40 ft". */
-  label: string;
-  notes: string;
-  /** Identity of the vanished room; the note returns if the same room reappears. */
-  roomId: string;
-  sig: string;
 }

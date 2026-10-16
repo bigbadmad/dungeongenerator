@@ -1,5 +1,5 @@
 // Small seedable PRNG (mulberry32). Generation is a pure function of
-// (settings, seed, overrides), so the full RNG state lives in DungeonState.
+// (settings, seed), so the full RNG state lives in DungeonState.
 
 export class Rng {
   state: number;

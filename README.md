@@ -3,9 +3,8 @@
 A browser-based tool for procedurally generating dungeon maps using classic
 1st Edition AD&D Dungeon Master's Guide random dungeon tables — passage
 length, turns, doors, side passages, chambers, room shape/size, contents,
-traps, and dressing. Generation proceeds one roll at a time so you can watch
-the dungeon grow, and every roll can be overridden if you'd rather steer the
-outcome by hand.
+traps, and dressing. Generate a whole dungeon in one click, or step through it
+one roll at a time and watch it grow.
 
 ## Features
 
@@ -16,21 +15,15 @@ outcome by hand.
   room range. Every seed picks a target inside it, a dungeon is never allowed
   to die out below the minimum, and generation winds down once the target is
   reached.
-- **Seeded and reproducible** — the same seed (plus settings and overrides)
-  always gives the same dungeon. The seed is shown in the status line; type it
+- **Seeded and reproducible** — the same seed and settings
+  always give the same dungeon. The seed is shown in the status line; type it
   back into the Seed box to regenerate it.
 - **Real dice** — every roll uses an actual die (d100, d82, ...) sized to its
   table, and the outcome is read off the table band the die lands in. The log
   shows exactly what was rolled.
-- **Working overrides** — press **Change** on any roll, pick a different
-  outcome and **Apply**: the dungeon is regenerated from the seed with that
-  result forced, and everything after it follows on. **Undo** puts the
-  natural roll back. Room notes stay with the same room (matched by identity and
-  footprint); if an override removes or reshapes a room its note is kept in a
-  "Notes from rooms that changed" box under the Room Key, and returns if the
-  room does (e.g. on Undo).
-  Overrides are keyed by step and table, so after forcing an early roll,
-  later overrides may land on different rolls if the layout has changed.
+- **Rooms first** — chambers are the most likely result of a periodic check,
+  passages are kept short, and rooms get few exits, so rooms make up around
+  half of the floor area rather than being scattered along long corridors.
 - **Proper junctions** — turns, side passages, T/X/Y intersections and 45°
   jogs are all built from a junction block with branches on its sides, so
   every branch you roll actually appears. Doors can sit in the passage or in a
@@ -74,8 +67,8 @@ npm test         # run the test suite (vitest)
    **Generate Full Dungeon**.
 2. Click a room on the map, or in the Room Key, to highlight it. Add notes to
    any room.
-3. Read the roll log on the left (newest first, grouped by step). Use
-   **Change** → **Apply** to force a different outcome.
+3. Read the roll log on the left (newest first, grouped by step) to see exactly
+   what was rolled for each decision.
 4. **Fit** re-centres the map; scroll to zoom and drag to pan. **Save** /
    **Load** persist a dungeon, **Export PNG** saves an image.
 
@@ -86,12 +79,11 @@ periodic check is made at the end of each stretch.
 
 ```
 src/
-  generator.ts      # generation algorithm: steps, junctions, rooms, overrides, replay
+  generator.ts      # generation algorithm: steps, junctions, rooms
   geometry.ts       # grid maths, room shapes/masks, ownership + clearance checks
   tables.ts         # weighted random tables (AD&D DMG-style) and dice mapping
   content.ts        # monsters, treasure, special rooms, trap descriptions
   rng.ts            # seedable PRNG
-  tableOptions.ts   # override option lists (derived from the real tables)
   state.ts          # app state store, save/load
   types.ts          # shared type definitions
   ui/
@@ -101,7 +93,7 @@ src/
   tests/            # vitest unit tests
 ```
 
-Generation is a pure function of `(settings, seed, overrides)`: `DungeonState`
+Generation is a pure function of `(settings, seed)`: `DungeonState`
 carries the RNG state, so a saved dungeon continues exactly as it would have.
 
 ## Tech stack

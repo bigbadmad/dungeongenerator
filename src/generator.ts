@@ -35,7 +35,6 @@ import {
   IRREGULAR_VARIANT,
   ROOM_SIZE_SMALL,
   ROOM_SIZE_LARGE,
-  ROOM_CONTENTS_BASE,
   ROOM_EXITS,
   EXIT_WIDTH,
   DOOR_TYPE,
@@ -48,11 +47,8 @@ import {
 } from './tables.js';
 import {
   monsterTable,
-  monsterEntry,
-  allMonsterOptions,
   describeMonsters,
   treasureTable,
-  allTreasureOptions,
   describeTreasure,
   SPECIAL_FEATURE,
   trapDetail,
@@ -109,7 +105,6 @@ export const DEFAULT_SETTINGS: DungeonSettings = {
 export function createInitialState(
   settings: Partial<DungeonSettings> = {},
   seed: number = randomSeed(),
-  overrides: Record<string, string> = {},
 ): DungeonState {
   return {
     version: 2,
@@ -125,10 +120,7 @@ export function createInitialState(
     rollHistory: [],
     stepCount: 0,
     selectedRoomId: null,
-    overrides: { ...overrides },
     zones: {},
-    targetSteps: 0,
-    orphanedNotes: [],
   };
 }
 
@@ -141,10 +133,8 @@ interface Ctx {
   rng: Rng;
   settings: DungeonSettings;
   seed: number;
-  overrides: Record<string, string>;
   step: number;
   rolls: RollRecord[];
-  counters: Map<string, number>;
   owners: Owners;
   rooms: Room[];
   corridors: Corridor[];
@@ -152,20 +142,15 @@ interface Ctx {
   zones: Record<string, string>;
   nextId: number;
   nextZone: number;
-  /** Lineage of the cursor being resolved; children extend it. */
-  path: string;
-  childCount: number;
 }
 
-function makeCtx(state: DungeonState, step: number, path: string): Ctx {
+function makeCtx(state: DungeonState, step: number): Ctx {
   return {
     rng: new Rng(state.rngState),
     settings: state.settings,
     seed: state.seed,
-    overrides: state.overrides ?? {},
     step,
     rolls: [],
-    counters: new Map(),
     owners: buildOwners(state.rooms, state.corridors),
     rooms: [...state.rooms],
     corridors: [...state.corridors],
@@ -173,8 +158,6 @@ function makeCtx(state: DungeonState, step: number, path: string): Ctx {
     zones: { ...state.zones },
     nextId: state.nextId,
     nextZone: state.nextZone,
-    path,
-    childCount: 0,
   };
 }
 
@@ -190,7 +173,6 @@ function finish(state: DungeonState, ctx: Ctx): DungeonState {
     cursors: ctx.cursors,
     rollHistory: [...state.rollHistory, ...ctx.rolls],
     stepCount: ctx.step + 1,
-    targetSteps: Math.max(state.targetSteps, ctx.step + 1),
     zones: ctx.zones,
   };
 }
@@ -205,68 +187,42 @@ function newZone(ctx: Ctx): number {
 
 // ── Rolling ─────────────────────────────────────────────────────────────────
 
-interface RollOpts<T> {
-  note?: string;
-  /** Full list of outcomes an override may choose from (defaults to the table rolled). */
-  all?: readonly TableEntry<T>[];
-}
-
 /**
  * Rolls a table and logs it. The die is real: the outcome is read straight
- * off the table band the die lands in. If the user has overridden this roll,
- * the override replaces the outcome but the die is still consumed, so the rest
- * of the dungeon stays on the same random stream.
+ * off the table band the die lands in.
  */
-function roll<T>(ctx: Ctx, table: string, entries: readonly TableEntry<T>[], opts: RollOpts<T> = {}): TableEntry<T> {
-  const { entry: natural, die, sides } = rollTable(entries, ctx.rng);
-  const n = (ctx.counters.get(table) ?? 0) + 1;
-  ctx.counters.set(table, n);
-  const key = `${ctx.step}|${table}|${n}`;
-
-  let entry = natural;
-  let overridden = false;
-  const wanted = ctx.overrides[key];
-  if (wanted !== undefined) {
-    const found = (opts.all ?? entries).find(e => String(e.value) === wanted);
-    if (found) { entry = found; overridden = true; }
-  }
-
+function roll<T>(ctx: Ctx, table: string, entries: readonly TableEntry<T>[], note?: string): TableEntry<T> {
+  const { entry, die, sides } = rollTable(entries, ctx.rng);
   ctx.rolls.push({
-    id: key,
-    key,
+    id: `${ctx.step}-${ctx.rolls.length}`,
     table,
-    note: opts.note,
+    note,
     diceResult: die,
     sides,
     outcome: entry.label,
     outcomeKey: String(entry.value),
-    overridden,
-    naturalOutcome: overridden ? natural.label : undefined,
     step: ctx.step,
   });
   return entry;
 }
 
-/** A roll that is not shown or overridable (still draws from the RNG). */
+/** A roll that is not shown in the log (still draws from the RNG). */
 function rollQuiet<T>(ctx: Ctx, entries: readonly TableEntry<T>[]): T {
   return rollTable(entries, ctx.rng).entry.value;
 }
 
 /** A log line for something that happened without a dice roll. */
 function logEvent(ctx: Ctx, table: string, outcome: string, note?: string): void {
-  const n = (ctx.counters.get(table) ?? 0) + 1;
-  ctx.counters.set(table, n);
-  const key = `${ctx.step}|${table}|${n}`;
   ctx.rolls.push({
-    id: key, key, table, note, diceResult: 0, sides: 0,
-    outcome, outcomeKey: '', overridden: false, step: ctx.step,
+    id: `${ctx.step}-${ctx.rolls.length}`,
+    table, note, diceResult: 0, sides: 0, outcome, outcomeKey: '', step: ctx.step,
   });
 }
 
 function rollWidth(ctx: Ctx, note?: string): number {
-  const e = roll(ctx, 'Passage Width', PASSAGE_WIDTH, { note });
+  const e = roll(ctx, 'Passage Width', PASSAGE_WIDTH, note);
   if (e.value !== 0) return e.value;
-  return roll(ctx, 'Special Passage', SPECIAL_PASSAGE, { note }).value;
+  return roll(ctx, 'Special Passage', SPECIAL_PASSAGE, note).value;
 }
 
 function areaName(ctx: Ctx, id: string): string {
@@ -317,7 +273,7 @@ function placePassage(ctx: Ctx, spec: PassageSpec): Placed | null {
     const p = advance(spec.start, spec.dir, obstacleAt);
     const other = ctx.owners.get(posKey(p.x, p.y))!;
     if (other !== spec.parentId && (spec.allowJoin ?? true)) {
-      const res = roll(ctx, 'Passage Collision', PASSAGE_COLLISION, { note: `${areaName(ctx, other)} ahead` });
+      const res = roll(ctx, 'Passage Collision', PASSAGE_COLLISION, `${areaName(ctx, other)} ahead`);
       if (res.value === 'join') { joinId = other; maxLen = obstacleAt; }
       else maxLen = obstacleAt - 2;
     } else {
@@ -356,7 +312,7 @@ function placePassage(ctx: Ctx, spec: PassageSpec): Placed | null {
   return null;
 }
 
-function cursorFor(ctx: Ctx, corridor: Corridor, forced?: ForcedAction): GenerationCursor {
+function cursorFor(corridor: Corridor, forced?: ForcedAction): GenerationCursor {
   return {
     type: 'corridor_end',
     corridorId: corridor.id,
@@ -365,7 +321,6 @@ function cursorFor(ctx: Ctx, corridor: Corridor, forced?: ForcedAction): Generat
     width: corridor.width,
     zone: corridor.zone,
     forced,
-    path: `${ctx.path}.${ctx.childCount++}`,
   };
 }
 
@@ -420,7 +375,7 @@ function buildJunction(ctx: Ctx, cursor: GenerationCursor, branches: BranchSpec[
       zone,
       doorType: b.doorType,
     });
-    if (placed && !placed.joined) ctx.cursors.push(cursorFor(ctx, placed.corridor, b.forced));
+    if (placed && !placed.joined) ctx.cursors.push(cursorFor(placed.corridor, b.forced));
   });
   return true;
 }
@@ -479,17 +434,17 @@ function turnTable(ctx: Ctx): TableEntry<TurnType>[] {
 // ── generateStart ───────────────────────────────────────────────────────────
 
 export function generateStart(state: DungeonState): DungeonState {
-  const ctx = makeCtx(state, 0, 'e');
+  const ctx = makeCtx(state, 0);
   const dir = state.settings.startDirection;
   const entrance: GridPos = { x: 0, y: 0 };
 
   const width = rollWidth(ctx, 'entrance');
-  const len = roll(ctx, 'Passage Length', PASSAGE_LENGTH, { note: 'entrance' }).value;
+  const len = roll(ctx, 'Passage Length', PASSAGE_LENGTH, 'entrance').value;
 
   const placed = placePassage(ctx, {
     start: entrance, dir, maxLen: len, width, parentId: 'entrance', zone: 0, allowJoin: false,
   });
-  if (placed) ctx.cursors.push(cursorFor(ctx, placed.corridor));
+  if (placed) ctx.cursors.push(cursorFor(placed.corridor));
 
   return finish({ ...state, started: true }, ctx);
 }
@@ -499,7 +454,7 @@ export function generateStart(state: DungeonState): DungeonState {
 export function generateNext(state: DungeonState): DungeonState {
   if (state.cursors.length === 0) return state;
 
-  const ctx = makeCtx(state, state.stepCount, state.cursors[0].path);
+  const ctx = makeCtx(state, state.stepCount);
   const cursor = ctx.cursors.shift()!;
 
   if (ctx.owners.has(posKey(cursor.position.x, cursor.position.y))) {
@@ -509,7 +464,7 @@ export function generateNext(state: DungeonState): DungeonState {
   } else if (cursor.forced?.kind === 'chamber') {
     if (!generateRoom(ctx, cursor)) logEvent(ctx, 'Chamber', 'No room for the chamber beyond the door — it opens onto solid rock');
   } else {
-    const periodic = roll(ctx, 'Periodic Check', periodicTable(ctx), { all: PERIODIC_CHECK });
+    const periodic = roll(ctx, 'Periodic Check', periodicTable(ctx));
     switch (periodic.value) {
       case 'continue':     handleContinue(ctx, cursor); break;
       case 'turn':         handleTurn(ctx, cursor); break;
@@ -547,7 +502,7 @@ export function isComplete(state: DungeonState): boolean {
 /** Another area has grown into the cell this cursor points at. */
 function resolveBlockedCursor(ctx: Ctx, cursor: GenerationCursor): void {
   const other = ctx.owners.get(posKey(cursor.position.x, cursor.position.y))!;
-  const res = roll(ctx, 'Passage Collision', PASSAGE_COLLISION, { note: `${areaName(ctx, other)} ahead` });
+  const res = roll(ctx, 'Passage Collision', PASSAGE_COLLISION, `${areaName(ctx, other)} ahead`);
   if (res.value === 'join') {
     ctx.corridors = ctx.corridors.map(c =>
       c.id === cursor.corridorId && !c.joins.includes(other) ? { ...c, joins: [...c.joins, other] } : c,
@@ -563,7 +518,7 @@ function handleContinue(ctx: Ctx, cursor: GenerationCursor): void {
     parentId: cursor.corridorId, zone: cursor.zone,
   });
   if (!placed) { logEvent(ctx, 'Passage', 'Blocked — the passage ends here'); return; }
-  if (!placed.joined) ctx.cursors.push(cursorFor(ctx, placed.corridor));
+  if (!placed.joined) ctx.cursors.push(cursorFor(placed.corridor));
 }
 
 function handleBend(ctx: Ctx, cursor: GenerationCursor, dir: Direction): void {
@@ -572,7 +527,7 @@ function handleBend(ctx: Ctx, cursor: GenerationCursor, dir: Direction): void {
 }
 
 function handleTurn(ctx: Ctx, cursor: GenerationCursor): void {
-  const turn = roll(ctx, 'Turn Type', turnTable(ctx), { all: TURN_TYPE });
+  const turn = roll(ctx, 'Turn Type', turnTable(ctx));
   const d = cursor.direction;
   const left = turnLeft(d);
   const right = turnRight(d);
@@ -623,7 +578,7 @@ function handleDoor(ctx: Ctx, cursor: GenerationCursor): void {
       parentId: cursor.corridorId, zone: cursor.zone, doorType,
     });
     if (!placed) { logEvent(ctx, 'Passage', 'Blocked — the passage ends here'); return; }
-    if (!placed.joined) ctx.cursors.push(cursorFor(ctx, placed.corridor));
+    if (!placed.joined) ctx.cursors.push(cursorFor(placed.corridor));
     return;
   }
 
@@ -644,7 +599,7 @@ function handleDeadEnd(ctx: Ctx, cursor: GenerationCursor): void {
     maxLen: rollQuiet(ctx, PASSAGE_LENGTH), width: Math.min(cursor.width, 2),
     parentId: cursor.corridorId, zone: cursor.zone, doorType: 'stone_secret',
   });
-  if (placed && !placed.joined) ctx.cursors.push(cursorFor(ctx, placed.corridor));
+  if (placed && !placed.joined) ctx.cursors.push(cursorFor(placed.corridor));
 }
 
 function handleStairs(ctx: Ctx, cursor: GenerationCursor): void {
@@ -682,7 +637,7 @@ function rescue(ctx: Ctx): void {
     });
     if (placed) {
       logEvent(ctx, 'Extra Passage', 'Every passage ended too soon — a further passage leads off an existing wall');
-      ctx.cursors.push(cursorFor(ctx, placed.corridor));
+      ctx.cursors.push(cursorFor(placed.corridor));
       return;
     }
   }
@@ -750,9 +705,9 @@ function generateRoom(ctx: Ctx, cursor: GenerationCursor): boolean {
   const compact = shape === 'square' || shape === 'circle';
   const sizeTable = compact ? ROOM_SIZE_SMALL : ROOM_SIZE_LARGE;
 
-  let w = roll(ctx, 'Room Width', sizeTable, { all: ROOM_SIZE_LARGE }).value;
+  let w = roll(ctx, 'Room Width', sizeTable).value;
   let h = w;
-  if (!compact) h = roll(ctx, 'Room Depth', sizeTable, { all: ROOM_SIZE_LARGE }).value;
+  if (!compact) h = roll(ctx, 'Room Depth', sizeTable).value;
 
   let variant: IrregularVariant | undefined;
   if (shape === 'irregular') {
@@ -776,8 +731,7 @@ function generateRoom(ctx: Ctx, cursor: GenerationCursor): boolean {
   if (!spot) return false;
 
   const room: Room = {
-    // Identified by lineage, not allocation order, so it survives replay.
-    id: `room@${cursor.path}`,
+    id: newId(ctx, 'room'),
     shape,
     variant,
     rect: spot.rect,
@@ -798,7 +752,9 @@ function generateRoom(ctx: Ctx, cursor: GenerationCursor): boolean {
 
   // Exits (none once the dungeon has reached its size).
   const wanted = roll(ctx, 'Room Exits', ROOM_EXITS).value;
-  const count = over ? 0 : wanted;
+  // Rooms keep branching in check: with many passages already open, a room gets at most one more.
+  const crowded = openCount(ctx) > MAX_OPEN_CURSORS;
+  const count = over ? 0 : crowded ? Math.min(wanted, 1) : wanted;
   if (over) logEvent(ctx, 'Size Limit', 'Dungeon is full — this room has no further exits');
 
   let made = 0;
@@ -821,13 +777,13 @@ function makeRoomExit(ctx: Ctx, room: Room, cells: GridPos[], dir: Direction): b
       });
       if (!placed) continue;
 
-      const door = roll(ctx, 'Exit Door', EXIT_DOOR, { note: `${dir} exit`, all: EXIT_DOOR });
+      const door = roll(ctx, 'Exit Door', EXIT_DOOR, `${dir} exit`);
       const doorType = door.value === 'none' ? undefined : door.value;
       placed.corridor.doorType = doorType;
 
       const exit: Exit = { direction: dir, doorType, corridorId: placed.corridor.id, exitPoint: start };
       room.exits.push(exit);
-      if (!placed.joined) ctx.cursors.push(cursorFor(ctx, placed.corridor));
+      if (!placed.joined) ctx.cursors.push(cursorFor(placed.corridor));
       return true;
     }
   }
@@ -835,28 +791,23 @@ function makeRoomExit(ctx: Ctx, room: Room, cells: GridPos[], dir: Direction): b
 }
 
 function fillRoomContents(ctx: Ctx, room: Room, level: number): void {
-  const contents = roll(ctx, 'Room Contents', roomContentsTable(level), { all: ROOM_CONTENTS_BASE });
+  const contents = roll(ctx, 'Room Contents', roomContentsTable(level));
   room.contents = contents.value;
 
   if (contents.value === 'monster' || contents.value === 'monster_treasure') {
     const zoneKey = String(room.zone);
     if (!ctx.zones[zoneKey]) {
-      ctx.zones[zoneKey] = roll(ctx, 'Zone Inhabitants', monsterTable(level), {
-        note: `zone ${room.zone}`, all: allMonsterOptions(),
-      }).value;
+      ctx.zones[zoneKey] = roll(ctx, 'Zone Inhabitants', monsterTable(level), `zone ${room.zone}`).value;
     }
     // Rooms in the same zone tend to share their inhabitants.
     const favoured = ctx.zones[zoneKey];
-    const pool = monsterTable(level);
-    // A forced zone inhabitant may not be level-eligible; it still belongs in the pool.
-    if (!pool.some(e => e.value === favoured)) pool.push(monsterEntry(favoured));
-    const table = pool.map(e => (e.value === favoured ? { ...e, weight: e.weight * 4 } : e));
-    const monster = roll(ctx, 'Monster', table, { all: allMonsterOptions() });
+    const table = monsterTable(level).map(e => (e.value === favoured ? { ...e, weight: e.weight * 4 } : e));
+    const monster = roll(ctx, 'Monster', table);
     room.monster = describeMonsters(monster.value, ctx.rng);
   }
 
   if (contents.value === 'monster_treasure' || contents.value === 'trap_treasure' || contents.value === 'treasure') {
-    const kind = roll(ctx, 'Treasure', treasureTable(level), { all: allTreasureOptions() });
+    const kind = roll(ctx, 'Treasure', treasureTable(level));
     room.treasure = describeTreasure(kind.value, level, ctx.rng);
   }
 
@@ -875,67 +826,6 @@ function fillRoomContents(ctx: Ctx, room: Room, level: number): void {
     ctx.rolls[ctx.rolls.length - 1].outcome = `${entry.label}: ${flavour}`;
     room.dressing = { type: entry.value, flavour };
   }
-}
-
-// ── Overrides & replay ──────────────────────────────────────────────────────
-
-/** What makes a room "the same room" across a replay: same lineage and same footprint. */
-function roomSig(room: Room): string {
-  const { x, y, w, h } = room.rect;
-  return `${room.shape}|${x},${y},${w},${h}`;
-}
-
-/**
- * Rebuilds the dungeon from its seed, applying the current overrides, and
- * plays it forward to the depth the user asked for (not merely however far the
- * previous replay got, which an early-ending override can shorten).
- *
- * Room notes follow rooms by identity AND footprint. A note whose room is gone
- * or has changed is kept in `orphanedNotes` rather than being attached to an
- * unrelated room or silently dropped, and returns if that room comes back.
- */
-export function regenerate(state: DungeonState): DungeonState {
-  const target = Math.max(state.targetSteps, state.stepCount);
-  let s = generateStart(createInitialState(state.settings, state.seed, state.overrides));
-  while (s.stepCount < target && s.cursors.length > 0) s = generateNext(s);
-
-  const oldNotes = new Map<string, { sig: string; room: Room }>();
-  for (const r of state.rooms) if (r.notes) oldNotes.set(r.id, { sig: roomSig(r), room: r });
-  const pending = [...state.orphanedNotes];
-
-  const rooms = s.rooms.map(r => {
-    const sig = roomSig(r);
-    const kept = oldNotes.get(r.id);
-    if (kept && kept.sig === sig) { oldNotes.delete(r.id); return { ...r, notes: kept.room.notes }; }
-    const i = pending.findIndex(o => o.roomId === r.id && o.sig === sig);
-    if (i >= 0) return { ...r, notes: pending.splice(i, 1)[0].notes };
-    return r;
-  });
-
-  const orphanedNotes = [
-    ...pending,
-    ...[...oldNotes.values()].map(({ sig, room }) => ({
-      label: describeRoomLines(room)[0], notes: room.notes, roomId: room.id, sig,
-    })),
-  ];
-
-  return {
-    ...s,
-    rooms,
-    orphanedNotes,
-    targetSteps: target,
-    selectedRoomId: rooms.some(r => r.id === state.selectedRoomId) ? state.selectedRoomId : null,
-  };
-}
-
-export function applyOverride(state: DungeonState, rollKey: string, value: string): DungeonState {
-  return regenerate({ ...state, overrides: { ...state.overrides, [rollKey]: value } });
-}
-
-export function clearOverride(state: DungeonState, rollKey: string): DungeonState {
-  const overrides = { ...state.overrides };
-  delete overrides[rollKey];
-  return regenerate({ ...state, overrides });
 }
 
 // ── Descriptions ────────────────────────────────────────────────────────────

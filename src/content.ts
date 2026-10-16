@@ -49,21 +49,6 @@ export function monsterTable(level: number): TableEntry<string>[] {
   }));
 }
 
-/** A table entry for one named monster, regardless of dungeon level. */
-export function monsterEntry(name: string): TableEntry<string> {
-  const m = MONSTERS.find(x => x.name === name) ?? MONSTERS[0];
-  return {
-    weight: m.weight,
-    value: m.name,
-    label: `${m.plural} (${m.number[0]}d${m.number[1]}${m.number[2] ? `+${m.number[2]}` : ''})`,
-  };
-}
-
-/** Every monster, for the roll-override dropdowns (which are level independent). */
-export function allMonsterOptions(): TableEntry<string>[] {
-  return MONSTERS.map(m => ({ weight: m.weight, value: m.name, label: m.plural }));
-}
-
 export function describeMonsters(name: string, rng: Rng): string {
   const def = MONSTERS.find(m => m.name === name);
   if (!def) return name;
@@ -130,11 +115,6 @@ export function describeTreasure(kind: TreasureKind, level: number, rng: Rng): s
     case 'magic_item':
       return rng.pick(MAGIC_ITEMS);
   }
-}
-
-/** Every treasure kind, for the roll-override dropdowns. */
-export function allTreasureOptions(): TableEntry<TreasureKind>[] {
-  return treasureTable(5);
 }
 
 // ── Special rooms ───────────────────────────────────────────────────────────

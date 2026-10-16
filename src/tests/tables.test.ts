@@ -113,16 +113,11 @@ describe('table shapes', () => {
     }
   });
 
-  it('values within a table are unique (overrides are matched by value)', () => {
+  it('values within a table are unique', () => {
     for (const [name, t] of Object.entries(tables)) {
       const values = t.map(e => String(e.value));
       expect(new Set(values).size, name).toBe(values.length);
     }
-  });
-
-  it('small room sizes are a subset of the large table (so overrides always resolve)', () => {
-    const large = new Set(ROOM_SIZE_LARGE.map(e => e.value));
-    for (const e of ROOM_SIZE_SMALL) expect(large.has(e.value)).toBe(true);
   });
 
   it('every trap has a description', () => {
