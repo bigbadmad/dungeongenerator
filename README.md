@@ -40,6 +40,11 @@ one roll at a time and watch it grow.
 - **Clean map rendering** — walls are drawn from the cell grid, so rooms and
   passages join up seamlessly. Rooms are tinted by zone and labelled with their
   number and contents (M monsters, T trap, $ treasure, * special).
+- **Autosave** — the current dungeon (including room notes and any
+  half-finished step-by-step run) is saved in your browser as you go, so it
+  survives the tab being reloaded or discarded while you're busy elsewhere.
+  **New** clears it. It lives in this browser only; use Save for a copy you
+  can keep or move.
 - **Save / Load** the dungeon as JSON, and **Export PNG** of the whole map
   (with scale bar and seed). Files from before version 2 can't be loaded.
 
